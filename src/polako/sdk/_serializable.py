@@ -2,9 +2,23 @@
 
 import json
 from dataclasses import fields, is_dataclass
+from decimal import Decimal
 from typing import Any, Dict, Type, TypeVar, cast, get_args, get_origin
+from uuid import UUID
 
 T = TypeVar("T", bound="Serializable")
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles UUID and Decimal types."""
+
+    def default(self, obj):
+        """Convert UUID and Decimal to JSON-serializable types."""
+        if isinstance(obj, UUID):
+            return str(obj)
+        elif isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
 
 
 class Serializable:
@@ -76,7 +90,7 @@ class Serializable:
         Returns:
             JSON string representation of the instance
         """
-        return json.dumps(self.to_dict())
+        return json.dumps(self.to_dict(), cls=CustomJSONEncoder)
 
     @classmethod
     def from_json(cls: Type[T], data: str) -> T:

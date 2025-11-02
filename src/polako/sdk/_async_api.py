@@ -5,7 +5,14 @@ from typing import Optional, TypeVar
 from uuid import UUID
 
 from polako.sdk._async_client import AsyncHttpClient
-from polako.sdk._order import CustomerInfo, OrderDetails, PaymentCallback, PaymentCallbackRaw, SessionInfo
+from polako.sdk._order import (
+    CreateOrderRequest,
+    CustomerInfo,
+    OrderDetails,
+    PaymentCallback,
+    PaymentCallbackRaw,
+    SessionInfo,
+)
 
 T = TypeVar("T")
 
@@ -80,26 +87,34 @@ class AsyncPolakoClient:
 
         from polako.sdk._constants import CURRENCIES, LANGUAGES
 
-        payload = {
-            "platform_id": platform_id,
-            "currency": order.currency or next(iter(CURRENCIES)),
-            "language": order.language or next(iter(LANGUAGES)),
-            "order_id": order.order_id,
-            "customer": customer.to_dict(),
-            "items": [item.to_dict() for item in order.items],
-            "total": order.total.quantize(Decimal("0.01")),
-            "response": "object",
-        }
+        # Prepare values
+        currency = order.currency or next(iter(CURRENCIES))
+        language = order.language or next(iter(LANGUAGES))
+        total = order.total.quantize(Decimal("0.01"))
 
-        payload["signature"] = self._create_signature(
-            f"{payload['order_id']}|{payload['total']:.2f}|{payload['currency']}",
+        # Create signature
+        signature = self._create_signature(
+            f"{order.order_id}|{total:.2f}|{currency}",
             secret_key,
+        )
+
+        # Create request payload using Serializable model
+        request = CreateOrderRequest(
+            platform_id=platform_id,
+            currency=currency,
+            language=language,
+            order_id=order.order_id,
+            customer=customer.to_dict(),
+            items=[item.to_dict() for item in order.items],
+            total=total,
+            response="object",
+            signature=signature,
         )
 
         # Send POST request to create order
         return await self._http_client.post(
             "/api/session/signed",
-            request_body=payload,
+            request_body=request,
             response_model=SessionInfo,
         )
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from polako.sdk._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
 from polako.sdk._serializable import Serializable
@@ -205,3 +206,22 @@ class PaymentCallbackRaw(Serializable):
             tx_meta=self.tx_meta,
             datetime=datetime.strptime(self.datetime, "%Y-%m-%d %H:%M"),
         )
+
+
+@dataclass
+class CreateOrderRequest(Serializable):
+    """
+    Internal request model for creating an order.
+
+    This wraps all the data needed to create a payment session.
+    """
+
+    platform_id: UUID
+    currency: TCurrency
+    language: TLanguage
+    order_id: str
+    customer: Dict[str, Any]
+    items: List[Dict[str, Any]]
+    total: Decimal
+    response: str
+    signature: str
