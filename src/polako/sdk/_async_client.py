@@ -1,33 +1,21 @@
+"""Async HTTP client for Polako Finance API."""
+
 import json
 from typing import Any, Dict, Literal, Optional, Type, TypeVar, Union
 
 import httpx
 
-from polako._serializable import Serializable
+from polako.sdk._exceptions import HttpClientError, HttpRequestError
+from polako.sdk._serializable import Serializable
 
 T = TypeVar("T", bound=Serializable)
 
 
-class HttpClientError(Exception):
-    """Base exception for HTTP client errors."""
-
-    pass
-
-
-class HttpRequestError(HttpClientError):
-    """Exception raised when an HTTP request fails."""
-
-    def __init__(self, message: str, status_code: Optional[int] = None, response_body: Optional[str] = None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.response_body = response_body
-
-
-class HttpClient:
+class AsyncHttpClient:
     """
-    HTTP client wrapper for the payment gateway API.
+    Async HTTP client wrapper for the payment gateway API.
 
-    This client handles sending requests to the gateway and parsing responses.
+    This client handles sending asynchronous requests to the gateway and parsing responses.
     Request and response bodies are serialized/deserialized using Serializable models.
     """
 
@@ -38,7 +26,7 @@ class HttpClient:
         headers: Optional[Dict[str, str]] = None,
     ):
         """
-        Initialize the HTTP client.
+        Initialize the async HTTP client.
 
         Args:
             base_url: Base URL of the payment gateway API
@@ -54,6 +42,19 @@ class HttpClient:
 
         if headers:
             self._default_headers.update(headers)
+
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self) -> "AsyncHttpClient":
+        """Enter async context manager."""
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit async context manager."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""
@@ -138,7 +139,7 @@ class HttpClient:
 
         return self._deserialize_response(response_text, response_model)
 
-    def request(
+    async def request(
         self,
         method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"],
         path: str,
@@ -148,7 +149,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send an HTTP request to the gateway.
+        Send an async HTTP request to the gateway.
 
         Args:
             method: HTTP method (GET, POST, PUT, PATCH, DELETE)
@@ -170,14 +171,25 @@ class HttpClient:
         json_body = self._serialize_body(request_body)
 
         try:
-            response = httpx.request(
-                method=method,
-                url=url,
-                content=json_body,
-                headers=request_headers,
-                params=params,
-                timeout=self.timeout,
-            )
+            if self._client:
+                # Using context manager client
+                response = await self._client.request(
+                    method=method,
+                    url=url,
+                    content=json_body,
+                    headers=request_headers,
+                    params=params,
+                )
+            else:
+                # One-off request
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.request(
+                        method=method,
+                        url=url,
+                        content=json_body,
+                        headers=request_headers,
+                        params=params,
+                    )
 
             return self._handle_response(response, response_model)
 
@@ -188,7 +200,7 @@ class HttpClient:
         except Exception as e:
             raise HttpRequestError(f"Unexpected error during request: {e}") from e
 
-    def get(
+    async def get(
         self,
         path: str,
         response_model: Optional[Type[T]] = None,
@@ -196,7 +208,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send a GET request.
+        Send an async GET request.
 
         Args:
             path: API endpoint path
@@ -207,9 +219,9 @@ class HttpClient:
         Returns:
             Deserialized response model instance or None
         """
-        return self.request("GET", path, response_model=response_model, headers=headers, params=params)
+        return await self.request("GET", path, response_model=response_model, headers=headers, params=params)
 
-    def post(
+    async def post(
         self,
         path: str,
         request_body: Optional[Union[Serializable, Dict[str, Any]]] = None,
@@ -218,7 +230,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send a POST request.
+        Send an async POST request.
 
         Args:
             path: API endpoint path
@@ -230,7 +242,7 @@ class HttpClient:
         Returns:
             Deserialized response model instance or None
         """
-        return self.request(
+        return await self.request(
             "POST",
             path,
             request_body=request_body,
@@ -239,7 +251,7 @@ class HttpClient:
             params=params,
         )
 
-    def put(
+    async def put(
         self,
         path: str,
         request_body: Optional[Union[Serializable, Dict[str, Any]]] = None,
@@ -248,7 +260,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send a PUT request.
+        Send an async PUT request.
 
         Args:
             path: API endpoint path
@@ -260,7 +272,7 @@ class HttpClient:
         Returns:
             Deserialized response model instance or None
         """
-        return self.request(
+        return await self.request(
             "PUT",
             path,
             request_body=request_body,
@@ -269,7 +281,7 @@ class HttpClient:
             params=params,
         )
 
-    def patch(
+    async def patch(
         self,
         path: str,
         request_body: Optional[Union[Serializable, Dict[str, Any]]] = None,
@@ -278,7 +290,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send a PATCH request.
+        Send an async PATCH request.
 
         Args:
             path: API endpoint path
@@ -290,7 +302,7 @@ class HttpClient:
         Returns:
             Deserialized response model instance or None
         """
-        return self.request(
+        return await self.request(
             "PATCH",
             path,
             request_body=request_body,
@@ -299,7 +311,7 @@ class HttpClient:
             params=params,
         )
 
-    def delete(
+    async def delete(
         self,
         path: str,
         response_model: Optional[Type[T]] = None,
@@ -307,7 +319,7 @@ class HttpClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Optional[T]:
         """
-        Send a DELETE request.
+        Send an async DELETE request.
 
         Args:
             path: API endpoint path
@@ -318,4 +330,4 @@ class HttpClient:
         Returns:
             Deserialized response model instance or None
         """
-        return self.request("DELETE", path, response_model=response_model, headers=headers, params=params)
+        return await self.request("DELETE", path, response_model=response_model, headers=headers, params=params)
