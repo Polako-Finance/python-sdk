@@ -1,12 +1,3 @@
-from polako._api import PolakoClient
-from polako._order import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PaymentCallback, SessionInfo
+"""Polako namespace package."""
 
-__all__ = [
-    "PolakoClient",
-    "CustomerAddress",
-    "CustomerInfo",
-    "OrderDetails",
-    "OrderItem",
-    "PaymentCallback",
-    "SessionInfo",
-]
+__path__ = __import__("pkgutil").extend_path(__path__, __name__)

@@ -1,14 +1,28 @@
+"""Data models for orders, customers, and payment callbacks."""
+
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from polako._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
-from polako._serializable import Serializable
+from polako.sdk._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
+from polako.sdk._serializable import Serializable
 
 
 @dataclass
 class OrderItem(Serializable):
+    """
+    Represents a single item in an order.
+
+    Attributes:
+        code: Optional item code/SKU
+        name: Item name (required)
+        description: Optional item description
+        price: Item price (must be positive)
+        quantity: Item quantity (must be positive integer)
+        tax: Optional tax schema (VAT, No_VAT, or Reduced_VAT)
+    """
+
     code: Optional[str]
     name: str
     description: Optional[str]
@@ -16,7 +30,13 @@ class OrderItem(Serializable):
     quantity: int
     tax: Optional[TTaxSchema]
 
-    def validate(self):
+    def validate(self) -> None:
+        """
+        Validate order item fields.
+
+        Raises:
+            ValueError: If any field validation fails
+        """
         if not self.name:
             raise ValueError("'name' is required")
 
@@ -32,13 +52,30 @@ class OrderItem(Serializable):
 
 @dataclass
 class OrderDetails(Serializable):
+    """
+    Represents order details for payment processing.
+
+    Attributes:
+        currency: Optional currency code (defaults to RSD if not specified)
+        language: Optional language code (sr, en, or ru)
+        order_id: Optional order identifier
+        items: List of order items (must not be empty)
+        total: Total order amount (must be positive)
+    """
+
     currency: Optional[TCurrency]
     language: Optional[TLanguage]
     order_id: Optional[str]
     items: List[OrderItem]
     total: Decimal
 
-    def validate(self):
+    def validate(self) -> None:
+        """
+        Validate order details and all items.
+
+        Raises:
+            ValueError: If any field validation fails
+        """
         if not self.items or len(self.items) <= 0:
             raise ValueError("'items' cannot be empty")
 
@@ -57,6 +94,17 @@ class OrderDetails(Serializable):
 
 @dataclass
 class CustomerAddress(Serializable):
+    """
+    Customer address information.
+
+    Attributes:
+        address: Street address
+        city: City name
+        state: State or province
+        zip: Postal/ZIP code
+        country: Country name or code
+    """
+
     address: Optional[str]
     city: Optional[str]
     state: Optional[str]
@@ -66,6 +114,17 @@ class CustomerAddress(Serializable):
 
 @dataclass
 class CustomerInfo(Serializable):
+    """
+    Customer information for payment processing.
+
+    Attributes:
+        first_name: Customer's first name
+        last_name: Customer's last name
+        email: Customer's email address
+        phone: Customer's phone number
+        address: Customer's address details
+    """
+
     first_name: Optional[str]
     last_name: Optional[str]
     email: Optional[str]
@@ -75,6 +134,15 @@ class CustomerInfo(Serializable):
 
 @dataclass
 class SessionInfo(Serializable):
+    """
+    Payment session information returned after order creation.
+
+    Attributes:
+        paymentSessionId: Unique payment session identifier
+        paymentPageUrl: URL to redirect customer for payment
+        expiresAt: Session expiration timestamp
+    """
+
     paymentSessionId: str
     paymentPageUrl: str
     expiresAt: str
@@ -82,6 +150,19 @@ class SessionInfo(Serializable):
 
 @dataclass
 class PaymentCallback:
+    """
+    Parsed payment callback data from the gateway.
+
+    Attributes:
+        order_id: Order identifier
+        total: Payment total amount
+        currency: Currency code
+        success: Whether payment was successful
+        tx_id: Transaction identifier
+        tx_meta: Additional transaction metadata
+        datetime: Payment timestamp
+    """
+
     order_id: Optional[str]
     total: Decimal
     currency: str
@@ -93,6 +174,12 @@ class PaymentCallback:
 
 @dataclass
 class PaymentCallbackRaw(Serializable):
+    """
+    Raw payment callback data from the gateway (before parsing).
+
+    This is used internally to deserialize the callback payload.
+    """
+
     order_id: Optional[str]
     total: str
     currency: str
@@ -103,6 +190,12 @@ class PaymentCallbackRaw(Serializable):
     signature: str
 
     def to_callback(self) -> PaymentCallback:
+        """
+        Convert raw callback data to parsed PaymentCallback.
+
+        Returns:
+            PaymentCallback with properly typed fields
+        """
         return PaymentCallback(
             order_id=self.order_id,
             total=Decimal(self.total),

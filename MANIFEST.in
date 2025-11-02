@@ -1,0 +1,35 @@
+include README.pypi.md
+include LICENSE
+include CHANGELOG.md
+
+recursive-include src/polako *.py
+recursive-include src/polako/sdk *.py
+recursive-include src/polako/sdk py.typed
+
+# Exclude development and build files
+exclude .gitignore
+exclude .pre-commit-config.yaml
+exclude .flake8
+exclude Makefile
+exclude poetry.lock
+exclude pyproject.toml
+exclude PUBLISHING.md
+exclude MIGRATION.md
+exclude MANIFEST.in
+
+# Exclude directories
+recursive-exclude tests *
+recursive-exclude examples *
+recursive-exclude .github *
+recursive-exclude .git *
+recursive-exclude docs *
+recursive-exclude __pycache__ *
+recursive-exclude *.egg-info *
+
+# Exclude file types
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude *.dylib

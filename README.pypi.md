@@ -109,7 +109,6 @@ callback = PolakoClient.parse_payment_callback(
 
 if callback.success:
     print(f"Payment successful for order: {callback.order_id}")
-    print(f"Transaction ID: {callback.tx_id}")
     print(f"Amount: {callback.total} {callback.currency}")
 else:
     print(f"Payment failed for order: {callback.order_id}")
@@ -208,77 +207,20 @@ order = OrderDetails(
         OrderItem(
             code="ITEM-001",
             name="Product A",
-            description="First product",
-            price=Decimal("100.00"),
+            price=Decimal("50.00"),
             quantity=2,
             tax="VAT"
         ),
         OrderItem(
             code="ITEM-002",
             name="Product B",
-            description="Second product",
-            price=Decimal("50.00"),
+            price=Decimal("75.00"),
             quantity=1,
             tax="VAT"
-        )
+        ),
     ],
-    total=Decimal("250.00")  # 100*2 + 50*1
+    total=Decimal("175.00")  # 50*2 + 75*1
 )
-```
-
-## Development
-
-### Setting Up Development Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/Polako-Finance/python-sdk.git
-cd python-sdk
-
-# Install dependencies using poetry
-poetry install
-
-# Activate virtual environment
-poetry shell
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-poetry run pytest
-
-# Run with coverage
-poetry run pytest --cov=polako
-
-# Run specific test file
-poetry run pytest tests/test_client.py
-```
-
-### Code Quality
-
-```bash
-# Format code with black
-poetry run black src/
-
-# Sort imports with isort
-poetry run isort src/
-
-# Type checking with mypy
-poetry run mypy src/
-
-# Linting with flake8
-poetry run flake8 src/
-```
-
-### Pre-commit Hooks
-
-```bash
-# Install pre-commit hooks
-poetry run pre-commit install
-
-# Run manually
-poetry run pre-commit run --all-files
 ```
 
 ## API Reference
@@ -315,27 +257,10 @@ async with PolakoClient() as client:
 ## Support
 
 - **Documentation**: [https://docs.polako-finance.com](https://docs.polako-finance.com)
+- **GitHub**: [https://github.com/Polako-Finance/python-sdk](https://github.com/Polako-Finance/python-sdk)
 - **Issues**: [GitHub Issues](https://github.com/Polako-Finance/python-sdk/issues)
 - **Email**: support@polako-finance.com
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for a list of changes.
-
----
-
-Made with ❤️ by [Polako Finance](https://polako-finance.com)
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Polako-Finance/python-sdk/blob/main/LICENSE) file for details.
