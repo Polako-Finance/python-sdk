@@ -1,7 +1,7 @@
 """Payment initiation models for direct payment flow."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from polako.sdk._serializable import Serializable

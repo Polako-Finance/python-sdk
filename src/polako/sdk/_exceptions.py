@@ -1,6 +1,9 @@
 """Exceptions for Polako Finance SDK."""
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from polako.sdk._order import SessionInfo
 
 
 class HttpClientError(Exception):
@@ -62,10 +65,3 @@ class PaymentInitError(HttpRequestError):
         """
         super().__init__(message, status_code=status_code, response_body=response_body)
         self.session_info = session_info
-
-
-# Avoid circular import — resolved at runtime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from polako.sdk._order import SessionInfo
