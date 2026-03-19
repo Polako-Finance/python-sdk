@@ -132,6 +132,22 @@ class CustomerInfo(Serializable):
     phone: Optional[str]
     address: Optional[CustomerAddress]
 
+    def validate_for_payment(self) -> None:
+        """
+        Validate that required fields are present for direct payment initiation.
+
+        The backend's InitCustomerInfo requires first_name, last_name, and email.
+
+        Raises:
+            ValueError: If any required field is missing or empty
+        """
+        if not self.first_name:
+            raise ValueError("'first_name' is required for payment initiation")
+        if not self.last_name:
+            raise ValueError("'last_name' is required for payment initiation")
+        if not self.email:
+            raise ValueError("'email' is required for payment initiation")
+
 
 @dataclass
 class SessionInfo(Serializable):
