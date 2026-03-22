@@ -225,3 +225,76 @@ class CreateOrderRequest(Serializable):
     total: Decimal
     response: str
     signature: str
+
+
+@dataclass
+class InitCustomerInfo(Serializable):
+    """
+    Customer information required to initiate a payment session.
+
+    Attributes:
+        first_name: Customer's first name (required)
+        last_name: Customer's last name (required)
+        email: Customer's email address (required)
+        phone: Customer's phone number
+        address: Customer's billing address
+        type: Customer type ('company' or 'person')
+        cgid: Customer government ID (required for non-RS shipping)
+    """
+
+    first_name: str
+    last_name: str
+    email: str
+    phone: Optional[str]
+    address: Optional[CustomerAddress]
+    type: Optional[str]
+    cgid: Optional[str]
+
+    def validate(self) -> None:
+        """
+        Validate customer info fields.
+
+        Raises:
+            ValueError: If any required field is missing
+        """
+        if not self.first_name:
+            raise ValueError("'first_name' is required")
+        if not self.last_name:
+            raise ValueError("'last_name' is required")
+        if not self.email:
+            raise ValueError("'email' is required")
+        if self.type is not None and self.type not in ("company", "person"):
+            raise ValueError(f"invalid 'type' value '{self.type}', must be 'company' or 'person'")
+
+
+@dataclass
+class PaymentUrlRequest(Serializable):
+    """
+    Internal request model for getting a payment URL.
+
+    This wraps the data needed to initiate a payment session.
+    """
+
+    payment_option_id: UUID
+    customer: Dict[str, Any]
+    address_shipping: Optional[Dict[str, Any]]
+    language_code: TLanguage
+    terms_accepted: bool
+
+
+@dataclass
+class PaymentUrlResult(Serializable):
+    """
+    Result of a payment URL request.
+
+    Attributes:
+        sessionId: Payment session identifier
+        type: Payment gateway type ('redirect' or 'form-data')
+        paymentUrl: URL to redirect the customer for payment
+        metadata: Additional metadata from the payment gateway
+    """
+
+    sessionId: str
+    type: Optional[str]
+    paymentUrl: Optional[str]
+    metadata: Optional[Dict[str, Any]]
