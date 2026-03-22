@@ -5,7 +5,18 @@ from typing import Optional, TypeVar
 from uuid import UUID
 
 from polako.sdk._async_client import AsyncHttpClient
-from polako.sdk._order import CreateOrderRequest, CustomerInfo, OrderDetails, PaymentCallback, PaymentCallbackRaw, SessionInfo
+from polako.sdk._order import (
+    CreateOrderRequest,
+    CustomerAddress,
+    CustomerInfo,
+    InitCustomerInfo,
+    OrderDetails,
+    PaymentCallback,
+    PaymentCallbackRaw,
+    PaymentUrlRequest,
+    PaymentUrlResult,
+    SessionInfo,
+)
 
 T = TypeVar("T")
 
@@ -109,6 +120,53 @@ class AsyncPolakoClient:
             "/api/session/signed",
             request_body=request,
             response_model=SessionInfo,
+        )
+
+    async def get_payment_url(
+        self,
+        session_id: UUID,
+        payment_option_id: UUID,
+        customer: InitCustomerInfo,
+        language_code: str,
+        terms_accepted: bool,
+        address_shipping: Optional[CustomerAddress] = None,
+    ) -> PaymentUrlResult:
+        """
+        Get a payment URL for an existing payment session.
+
+        This initiates the payment process by selecting a payment option and
+        providing customer details, returning a URL to redirect the customer.
+
+        Args:
+            session_id: Payment session UUID (from create_order)
+            payment_option_id: UUID of the selected payment option
+            customer: Customer information with required first_name, last_name, email
+            language_code: Language code for the payment page ('sr', 'en', or 'ru')
+            terms_accepted: Whether the customer accepted the terms of service
+            address_shipping: Optional shipping address
+
+        Returns:
+            PaymentUrlResult containing the payment URL and gateway metadata
+
+        Raises:
+            ValueError: If validation of customer info fails
+            HttpRequestError: If the API request fails
+            HttpClientError: If there's a network error
+        """
+        customer.validate()
+
+        request = PaymentUrlRequest(
+            payment_option_id=payment_option_id,
+            customer=customer.to_dict(),
+            address_shipping=address_shipping.to_dict() if address_shipping else None,
+            language_code=language_code,
+            terms_accepted=terms_accepted,
+        )
+
+        return await self._http_client.post(
+            f"/api/session/{session_id}/payment_url",
+            request_body=request,
+            response_model=PaymentUrlResult,
         )
 
     @staticmethod
