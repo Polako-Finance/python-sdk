@@ -3,7 +3,7 @@
 import json
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
-from typing import Any, Dict, Type, TypeVar, cast, get_args, get_origin
+from typing import Any, Dict, Type, TypeVar, Union, cast, get_args, get_origin
 from uuid import UUID
 
 T = TypeVar("T", bound="Serializable")
@@ -60,6 +60,16 @@ class Serializable:
                 # Type narrowing: field_type is a dataclass that should be Serializable
                 nested_cls = cast(Serializable, field_type)
                 init_args[f.name] = nested_cls.from_dict(value)
+            elif origin is Union:
+                # Handle Optional[SomeDataclass] (Union[SomeDataclass, None])
+                resolved = False
+                for arg in args:
+                    if is_dataclass(arg) and isinstance(value, dict):
+                        init_args[f.name] = cast(Serializable, arg).from_dict(value)
+                        resolved = True
+                        break
+                if not resolved:
+                    init_args[f.name] = value
             else:
                 init_args[f.name] = value
 

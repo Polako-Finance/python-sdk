@@ -13,6 +13,7 @@ from polako.sdk._order import (
     OrderDetails,
     PaymentCallback,
     PaymentCallbackRaw,
+    PaymentSessionDetails,
     PaymentUrlRequest,
     PaymentUrlResult,
     SessionInfo,
@@ -120,6 +121,28 @@ class AsyncPolakoClient:
             "/api/session/signed",
             request_body=request,
             response_model=SessionInfo,
+        )
+
+    async def get_session_details(
+        self,
+        session_id: UUID,
+    ) -> PaymentSessionDetails:
+        """
+        Get detailed information about a payment session.
+
+        Args:
+            session_id: Payment session UUID
+
+        Returns:
+            PaymentSessionDetails containing session info, customer, cart, and payment options
+
+        Raises:
+            HttpRequestError: If the API request fails (e.g., 404 if session not found, 410 if expired)
+            HttpClientError: If there's a network error
+        """
+        return await self._http_client.get(
+            f"/api/session/{session_id}",
+            response_model=PaymentSessionDetails,
         )
 
     async def get_payment_url(

@@ -209,6 +209,138 @@ class PaymentCallbackRaw(Serializable):
 
 
 @dataclass
+class PaymentOption(Serializable):
+    """
+    A payment provider option available for a session.
+
+    Attributes:
+        id: Payment provider identifier
+        name: Payment provider display name
+    """
+
+    id: str
+    name: str
+
+
+@dataclass
+class PaymentConfig(Serializable):
+    """
+    Platform payment configuration for a session.
+
+    Attributes:
+        fields_display: Fields to display (e.g., 'address_shipping', 'customer_gid')
+        fields_require: Fields to require (e.g., 'phone', 'email_confirm')
+        shipping_countries: Allowed shipping country codes
+        skip_details_form: Whether to skip the customer details form
+        allow_company: Whether to allow company-type customers
+        skip_recaptcha: Whether to skip reCAPTCHA verification
+    """
+
+    fields_display: Optional[List[str]]
+    fields_require: Optional[List[str]]
+    shipping_countries: Optional[List[str]]
+    skip_details_form: Optional[bool]
+    allow_company: Optional[bool]
+    skip_recaptcha: Optional[bool]
+
+
+@dataclass
+class SessionCustomerInfo(Serializable):
+    """
+    Customer information associated with a payment session.
+
+    Attributes:
+        first_name: Customer's first name
+        last_name: Customer's last name
+        email: Customer's email address
+        phone: Customer's phone number
+        address: Customer's address details
+        type: Customer type ('company' or 'person')
+        cgid: Customer government ID
+    """
+
+    first_name: Optional[str]
+    last_name: Optional[str]
+    email: Optional[str]
+    phone: Optional[str]
+    address: Optional[CustomerAddress]
+    type: Optional[str]
+    cgid: Optional[str]
+
+
+@dataclass
+class CartItem(Serializable):
+    """
+    An item in a payment session shopping cart.
+
+    Attributes:
+        id: Server-assigned item identifier
+        name: Item name
+        description: Item description
+        price: Item price
+        tax: Tax amount
+        tax_schema: Tax schema type (e.g., 'VAT', 'No_VAT', 'Reduced_VAT')
+        quantity: Item quantity
+        client_item_id: Client-provided item identifier
+        refunded_quantity: Number of refunded units
+    """
+
+    id: str
+    name: str
+    description: Optional[str]
+    price: float
+    tax: float
+    tax_schema: str
+    quantity: int
+    client_item_id: Optional[str]
+    refunded_quantity: int
+
+
+@dataclass
+class ShoppingCart(Serializable):
+    """
+    Shopping cart with items and total price.
+
+    Attributes:
+        items: List of cart items
+        currency: Currency code
+        total_price: Total price of the cart
+    """
+
+    items: List[CartItem]
+    currency: str
+    total_price: float
+
+
+@dataclass
+class PaymentSessionDetails(Serializable):
+    """
+    Detailed information about a payment session.
+
+    Returned by GET /api/session/{session_id}.
+
+    Attributes:
+        session_id: Payment session identifier
+        language_code: Current language code
+        supported_languages: List of supported language codes
+        payment_config: Platform payment configuration
+        customer: Customer information
+        shopping_cart: Shopping cart with items and total
+        payment_options: Available payment providers
+        terms_url: URL to the terms of service
+    """
+
+    session_id: str
+    language_code: str
+    supported_languages: List[str]
+    payment_config: Optional[PaymentConfig]
+    customer: SessionCustomerInfo
+    shopping_cart: ShoppingCart
+    payment_options: List[PaymentOption]
+    terms_url: str
+
+
+@dataclass
 class CreateOrderRequest(Serializable):
     """
     Internal request model for creating an order.

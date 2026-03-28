@@ -27,30 +27,42 @@ Example:
 from polako.sdk._async_api import AsyncPolakoClient as PolakoClient
 from polako.sdk._exceptions import HttpClientError, HttpRequestError
 from polako.sdk._order import (
+    CartItem,
     CustomerAddress,
     CustomerInfo,
     InitCustomerInfo,
     OrderDetails,
     OrderItem,
     PaymentCallback,
+    PaymentConfig,
+    PaymentOption,
+    PaymentSessionDetails,
     PaymentUrlResult,
+    SessionCustomerInfo,
     SessionInfo,
+    ShoppingCart,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     # Client
     "PolakoClient",
     # Models
+    "CartItem",
     "CustomerAddress",
     "CustomerInfo",
     "InitCustomerInfo",
     "OrderDetails",
     "OrderItem",
     "PaymentCallback",
+    "PaymentConfig",
+    "PaymentOption",
+    "PaymentSessionDetails",
     "PaymentUrlResult",
+    "SessionCustomerInfo",
     "SessionInfo",
+    "ShoppingCart",
     # Exceptions
     "HttpClientError",
     "HttpRequestError",
