@@ -1,6 +1,6 @@
 # python-sdk — Decisions Log
 
-> **Platform decisions**: [Service Catalog](../../documentation/architecture/service-catalog.md)
+> **Platform decisions**: [Service Catalog](../../documentation/target-state/service-catalog.md)
 
 | # | Decision | Rationale | Date | Platform Impact |
 |---|----------|-----------|------|-----------------|

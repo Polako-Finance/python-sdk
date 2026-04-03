@@ -1,6 +1,6 @@
 # python-sdk — Architecture
 
-> **Platform context**: [Service Catalog](../../documentation/architecture/service-catalog.md)
+> **Platform context**: [Service Catalog](../../documentation/target-state/service-catalog.md)
 
 ## Role
 

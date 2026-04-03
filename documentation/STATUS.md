@@ -1,6 +1,6 @@
 # python-sdk — Status
 
-> **Platform tracking**: [Migration Status](../../documentation/migration/migration-status.md)
+> **Platform tracking**: [Migration Status](../../documentation/target-state/migration-status.md)
 
 ## Current State
 
