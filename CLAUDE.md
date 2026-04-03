@@ -4,10 +4,12 @@ This is the **python-sdk** — the public Python SDK (`polako-finance` on PyPI) 
 
 ## Platform Context
 
-This module is part of the **Polako Finance** platform. For platform-wide architecture, see:
+This module is part of the **Polako Finance** platform.
+
+- **Current state**: [../../documentation/current-state/architecture/overview.md](../../documentation/current-state/architecture/overview.md)
+- **Target state**: [../../documentation/target-state/architecture/overview.md](../../documentation/target-state/architecture/overview.md)
 - **Platform CLAUDE.md**: [../../CLAUDE.md](../../CLAUDE.md)
-- **Module architecture**: [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md)
-- **Module status**: [documentation/STATUS.md](documentation/STATUS.md)
+- **Module docs**: [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md) | [documentation/DECISIONS.md](documentation/DECISIONS.md) | [documentation/STATUS.md](documentation/STATUS.md)
 
 ## Common Commands
 
