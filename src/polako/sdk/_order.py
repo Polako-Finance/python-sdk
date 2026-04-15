@@ -317,7 +317,7 @@ class PaymentSessionDetails(Serializable):
     """
     Detailed information about a payment session.
 
-    Returned by GET /api/session/{session_id}.
+    Returned by GET /v1/session/{session_id}.
 
     Attributes:
         session_id: Payment session identifier

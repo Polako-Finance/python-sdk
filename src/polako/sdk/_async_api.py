@@ -118,7 +118,7 @@ class AsyncPolakoClient:
 
         # Send POST request to create order
         return await self._http_client.post(
-            "/api/session/signed",
+            "/v1/session/signed",
             request_body=request,
             response_model=SessionInfo,
         )
@@ -141,7 +141,7 @@ class AsyncPolakoClient:
             HttpClientError: If there's a network error
         """
         return await self._http_client.get(
-            f"/api/session/{session_id}",
+            f"/v1/session/{session_id}",
             response_model=PaymentSessionDetails,
         )
 
@@ -187,7 +187,7 @@ class AsyncPolakoClient:
         )
 
         return await self._http_client.post(
-            f"/api/session/{session_id}/payment_url",
+            f"/v1/session/{session_id}/payment_url",
             request_body=request,
             response_model=PaymentUrlResult,
         )
