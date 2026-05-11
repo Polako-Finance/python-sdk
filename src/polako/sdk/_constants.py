@@ -15,5 +15,5 @@ TTaxSchema = Literal["VAT", "No_VAT", "Reduced_VAT"]
 TAX_SCHEMAS: Set[TTaxSchema] = {"VAT", "No_VAT", "Reduced_VAT"}
 
 # API base URLs
-BASE_URL_PROD = "https://backend.polako-finance.com"
-BASE_URL_TEST = "https://stg-backend.polako-finance.com"
+BASE_URL_PROD = "https://api.infra.polako-finance.com"
+BASE_URL_TEST = "https://stg-api.infra.polako-finance.com"
