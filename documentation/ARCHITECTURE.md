@@ -8,7 +8,7 @@ Public Python SDK (`polako-finance` on PyPI) for merchant payment integrations. 
 
 ## Operations
 
-- Create payment orders (POST /api/session/signed)
+- Create payment orders (POST /v1/session/signed)
 - Get session details, payment URLs
 - Parse/verify payment callbacks
 
@@ -18,7 +18,7 @@ Minimal — SDK targets payment-gateway endpoints which are NOT being extracted.
 
 ## Key Configuration
 
-- PyPI: `polako-finance` v0.1.3
+- PyPI: `polako-finance` v0.1.4
 - Python: 3.9+
 - Dependency: httpx[http2]
 - Currencies: RSD | Languages: sr, en, ru
