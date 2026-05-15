@@ -17,6 +17,7 @@ from polako.sdk._order import (
     PaymentUrlRequest,
     PaymentUrlResult,
     SessionInfo,
+    SignedPaymentCallbackRaw,
 )
 
 T = TypeVar("T")
@@ -197,6 +198,14 @@ class AsyncPolakoClient:
         """
         Parse and validate a payment callback from the gateway.
 
+        Supports both callback formats:
+        - Legacy (generic): fields {order_id, total, currency, success, tx_id, tx_meta, datetime, signature}
+          Signature over: order_id|total|success
+        - Schema 1.1 (generic_signed): fields {type, status, schema, order_id, session_id, event_id, ...}
+          Signature over: type|status|order_id|amount|currency
+
+        The format is auto-detected by the presence of the "schema" field in the payload.
+
         Args:
             payload: JSON string containing the payment callback data
             secret_key: Optional secret key for signature verification
@@ -207,16 +216,28 @@ class AsyncPolakoClient:
         Raises:
             AssertionError: If signature verification fails
         """
-        data = PaymentCallbackRaw.from_json(payload)
+        import json
+        raw = json.loads(payload)
 
-        if secret_key:
-            AsyncPolakoClient._verify_signature(
-                f"{data.order_id}|{data.total}|{data.success}",
-                secret_key,
-                data.signature,
-            )
-
-        return data.to_callback()
+        if "schema" in raw:
+            data = SignedPaymentCallbackRaw.from_dict(raw)
+            if secret_key:
+                amount = data.total if data.total is not None else data.refunded_amount
+                AsyncPolakoClient._verify_signature(
+                    f"{data.type}|{data.status}|{data.order_id}|{amount}|{data.currency}",
+                    secret_key,
+                    data.signature,
+                )
+            return data.to_callback()
+        else:
+            data = PaymentCallbackRaw.from_dict(raw)
+            if secret_key:
+                AsyncPolakoClient._verify_signature(
+                    f"{data.order_id}|{data.total}|{data.success}",
+                    secret_key,
+                    data.signature,
+                )
+            return data.to_callback()
 
     @staticmethod
     def _create_signature(source_str: str, secret_key: str) -> str:

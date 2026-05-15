@@ -154,6 +154,8 @@ class PaymentCallback:
     """
     Parsed payment callback data from the gateway.
 
+    Supports both generic (legacy) and generic_signed (schema 1.1) callback formats.
+
     Attributes:
         order_id: Order identifier
         total: Payment total amount
@@ -162,6 +164,9 @@ class PaymentCallback:
         tx_id: Transaction identifier
         tx_meta: Additional transaction metadata
         datetime: Payment timestamp
+        callback_type: Callback type — "payment" or "refund" (schema 1.1 only)
+        session_id: Payment session UUID (schema 1.1 only)
+        schema_version: Callback schema version — None for legacy, "1.1" for signed
     """
 
     order_id: Optional[str]
@@ -171,12 +176,15 @@ class PaymentCallback:
     tx_id: str
     tx_meta: Dict[str, Any]
     datetime: datetime
+    callback_type: Optional[str] = None
+    session_id: Optional[str] = None
+    schema_version: Optional[str] = None
 
 
 @dataclass
 class PaymentCallbackRaw(Serializable):
     """
-    Raw payment callback data from the gateway (before parsing).
+    Raw payment callback data from the gateway (legacy generic format).
 
     This is used internally to deserialize the callback payload.
     """
@@ -205,6 +213,49 @@ class PaymentCallbackRaw(Serializable):
             tx_id=self.tx_id,
             tx_meta=self.tx_meta,
             datetime=datetime.strptime(self.datetime, "%Y-%m-%d %H:%M"),
+        )
+
+
+@dataclass
+class SignedPaymentCallbackRaw(Serializable):
+    """
+    Raw payment callback data from the gateway (generic_signed schema 1.1).
+    """
+
+    type: str
+    status: str
+    schema: str
+    order_id: Optional[str]
+    session_id: str
+    event_id: str
+    tx_meta: Dict[str, Any]
+    timestamp: str
+    currency: str
+    total: Optional[str] = None
+    refunded_amount: Optional[str] = None
+    refunded_items: Optional[List[Dict[str, Any]]] = None
+    refundable: Optional[float] = None
+    signature: str = ""
+
+    def to_callback(self) -> PaymentCallback:
+        """
+        Convert schema 1.1 callback data to parsed PaymentCallback.
+
+        Returns:
+            PaymentCallback with properly typed fields
+        """
+        amount = self.total if self.total is not None else self.refunded_amount
+        return PaymentCallback(
+            order_id=self.order_id,
+            total=Decimal(str(amount)) if amount else Decimal("0"),
+            currency=self.currency,
+            success=self.status == "success",
+            tx_id=self.event_id,
+            tx_meta=self.tx_meta,
+            datetime=datetime.fromisoformat(self.timestamp),
+            callback_type=self.type,
+            session_id=self.session_id,
+            schema_version=self.schema,
         )
 
 
