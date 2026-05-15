@@ -217,6 +217,7 @@ class AsyncPolakoClient:
             AssertionError: If signature verification fails
         """
         import json
+
         raw = json.loads(payload)
 
         if "schema" in raw:
