@@ -150,6 +150,20 @@ class SessionInfo(Serializable):
 
 
 @dataclass
+class RefundedItem(Serializable):
+    """
+    An item included in a refund callback.
+
+    Attributes:
+        code: Client-provided item code/SKU (may be None if not provided during refund)
+        qty: Number of units refunded
+    """
+
+    code: Optional[str]
+    qty: int
+
+
+@dataclass
 class PaymentCallback:
     """
     Parsed payment callback data from the gateway.
@@ -167,6 +181,9 @@ class PaymentCallback:
         callback_type: Callback type — "payment" or "refund" (schema 1.1 only)
         session_id: Payment session UUID (schema 1.1 only)
         schema_version: Callback schema version — None for legacy, "1.1" for signed
+        refunded_amount: Amount refunded (refund callbacks only)
+        refunded_items: Items included in the refund (refund callbacks only)
+        refundable: Remaining refundable amount after this refund (refund callbacks only)
     """
 
     order_id: Optional[str]
@@ -179,6 +196,9 @@ class PaymentCallback:
     callback_type: Optional[str] = None
     session_id: Optional[str] = None
     schema_version: Optional[str] = None
+    refunded_amount: Optional[Decimal] = None
+    refunded_items: Optional[List[RefundedItem]] = None
+    refundable: Optional[Decimal] = None
 
 
 @dataclass
@@ -245,6 +265,11 @@ class SignedPaymentCallbackRaw(Serializable):
             PaymentCallback with properly typed fields
         """
         amount = self.total if self.total is not None else self.refunded_amount
+        parsed_items = (
+            [RefundedItem(code=item.get("code"), qty=item["qty"]) for item in self.refunded_items]
+            if self.refunded_items
+            else None
+        )
         return PaymentCallback(
             order_id=self.order_id,
             total=Decimal(str(amount)) if amount else Decimal("0"),
@@ -256,6 +281,9 @@ class SignedPaymentCallbackRaw(Serializable):
             callback_type=self.type,
             session_id=self.session_id,
             schema_version=self.schema,
+            refunded_amount=Decimal(self.refunded_amount) if self.refunded_amount else None,
+            refunded_items=parsed_items,
+            refundable=Decimal(str(self.refundable)) if self.refundable is not None else None,
         )
 
 

@@ -38,12 +38,13 @@ from polako.sdk._order import (
     PaymentOption,
     PaymentSessionDetails,
     PaymentUrlResult,
+    RefundedItem,
     SessionCustomerInfo,
     SessionInfo,
     ShoppingCart,
 )
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 __all__ = [
     # Client
@@ -60,6 +61,7 @@ __all__ = [
     "PaymentOption",
     "PaymentSessionDetails",
     "PaymentUrlResult",
+    "RefundedItem",
     "SessionCustomerInfo",
     "SessionInfo",
     "ShoppingCart",
