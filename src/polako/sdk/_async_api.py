@@ -1,7 +1,7 @@
 """Async API client for Polako Finance."""
 
 from decimal import Decimal
-from typing import Optional, TypeVar
+from typing import List, Optional, TypeVar
 from uuid import UUID
 
 from polako.sdk._async_client import AsyncHttpClient
@@ -16,6 +16,9 @@ from polako.sdk._order import (
     PaymentSessionDetails,
     PaymentUrlRequest,
     PaymentUrlResult,
+    RefundItem,
+    RefundRequest,
+    RefundResponse,
     SessionInfo,
     SignedPaymentCallbackRaw,
 )
@@ -191,6 +194,65 @@ class AsyncPolakoClient:
             f"/v1/session/{session_id}/payment_url",
             request_body=request,
             response_model=PaymentUrlResult,
+        )
+
+    async def refund_session(
+        self,
+        session_id: UUID,
+        platform_id: UUID,
+        secret_key: str,
+        reason: str,
+        refund_items: Optional[List[RefundItem]] = None,
+    ) -> RefundResponse:
+        """
+        Refund a payment session (full or partial).
+
+        If refund_items is None, a full refund is performed. Otherwise, a partial
+        refund is performed for the specified items.
+
+        Args:
+            session_id: Payment session UUID to refund
+            platform_id: Platform identifier UUID for authentication
+            secret_key: Secret key used for generating request signature
+            reason: Reason for the refund (3-255 characters)
+            refund_items: Optional list of RefundItem for partial refund.
+                          If None, all remaining items are refunded.
+
+        Returns:
+            RefundResponse containing refund transaction details
+
+        Raises:
+            ValueError: If reason is too short/long or refund_items is empty
+            HttpRequestError: If the API request fails
+            HttpClientError: If there's a network error
+        """
+        if not reason or len(reason) < 3:
+            raise ValueError("'reason' must be at least 3 characters")
+        if len(reason) > 255:
+            raise ValueError("'reason' must be at most 255 characters")
+        if refund_items is not None and len(refund_items) == 0:
+            raise ValueError("'refund_items' must not be empty; pass None for a full refund")
+
+        is_full_refund = refund_items is None
+
+        signature = self._create_signature(
+            f"refund|{session_id}|{platform_id}",
+            secret_key,
+        )
+
+        request = RefundRequest(
+            platform_id=platform_id,
+            session_id=session_id,
+            is_full_refund=is_full_refund,
+            reason=reason,
+            signature=signature,
+            refund_items=refund_items if not is_full_refund else None,
+        )
+
+        return await self._http_client.post(
+            f"/v1/session/{session_id}/refund/signed",
+            request_body=request,
+            response_model=RefundResponse,
         )
 
     @staticmethod

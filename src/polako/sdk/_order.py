@@ -509,3 +509,61 @@ class PaymentUrlResult(Serializable):
     type: Optional[str]
     paymentUrl: Optional[str]
     metadata: Optional[Dict[str, Any]]
+
+
+@dataclass
+class RefundItem(Serializable):
+    """
+    An item to include in a refund request.
+
+    Attributes:
+        item_id: Server-assigned item UUID
+        refund_quantity: Number of units to refund (must be > 0)
+        item_code: Optional client-provided item code/SKU
+    """
+
+    item_id: str
+    refund_quantity: int
+    item_code: Optional[str] = None
+
+
+@dataclass
+class RefundRequest(Serializable):
+    """Internal request model for a signed refund."""
+
+    platform_id: UUID
+    session_id: UUID
+    is_full_refund: bool
+    reason: str
+    signature: str
+    refund_items: Optional[List[RefundItem]] = None
+
+
+@dataclass
+class RefundResponse(Serializable):
+    """
+    Response from a refund operation.
+
+    Attributes:
+        session_id: Payment session identifier
+        session_status: New session status (REFUNDED or PARTIALLY_REFUNDED)
+        original_transaction_id: ID of the original payment transaction
+        refund_transaction_id: ID of the new refund transaction
+        refund_amount: Amount refunded
+        original_amount: Original transaction amount
+        currency: Currency code
+        refund_time: Timestamp of the refund
+        fiscal_invoice_id: Fiscal invoice ID (if applicable)
+        fiscal_receipt_url: URL to fiscal receipt (if applicable)
+    """
+
+    session_id: str
+    session_status: str
+    original_transaction_id: str
+    refund_transaction_id: str
+    refund_amount: float
+    original_amount: float
+    currency: str
+    refund_time: str
+    fiscal_invoice_id: Optional[str] = None
+    fiscal_receipt_url: Optional[str] = None
