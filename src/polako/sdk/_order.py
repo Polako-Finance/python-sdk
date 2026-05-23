@@ -567,3 +567,71 @@ class RefundResponse(Serializable):
     refund_time: str
     fiscal_invoice_id: Optional[str] = None
     fiscal_receipt_url: Optional[str] = None
+
+
+@dataclass
+class CheckStatusRequest(Serializable):
+    """Internal request model for a signed status check."""
+
+    platform_id: UUID
+    session_id: UUID
+    signature: str
+
+
+@dataclass
+class OrderStatusItem(Serializable):
+    """
+    An item in the order status response.
+
+    Attributes:
+        id: Server-assigned item UUID
+        name: Item name/description
+        price: Unit price
+        quantity: Original quantity ordered
+        refunded_quantity: Number of units already refunded
+        client_item_id: Optional client-provided item code/SKU
+    """
+
+    id: str
+    name: str
+    price: float
+    quantity: int
+    refunded_quantity: int
+    client_item_id: Optional[str] = None
+
+
+@dataclass
+class OrderStatusResponse(Serializable):
+    """
+    Response from an order status check.
+
+    Attributes:
+        session_id: Payment session identifier
+        client_order_id: Merchant's own order reference (if provided at creation)
+        status: Session status (created, in_process, completed, failed, cancelled,
+                refunded, partially_refunded, expired)
+        created_at: Session creation timestamp (ISO 8601)
+        total: Total order amount
+        currency: Currency code (e.g. "RSD")
+        refundable: Amount still available for refund (None if not applicable)
+        customer_name: Customer full name (if provided)
+        customer_email: Customer email (if provided)
+        error_code: Error code from payment provider (if payment failed)
+        error_message: Human-readable error message (if payment failed)
+        fiscal_receipt_url: URL to fiscal receipt (if applicable)
+        items: Order items with refund tracking
+    """
+
+    session_id: str
+    status: str
+    created_at: str
+    total: float
+    currency: str
+    items: List[OrderStatusItem]
+    client_order_id: Optional[str] = None
+    refundable: Optional[float] = None
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    fiscal_receipt_url: Optional[str] = None

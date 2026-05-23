@@ -16,6 +16,8 @@ from polako.sdk._order import (
     PaymentSessionDetails,
     PaymentUrlRequest,
     PaymentUrlResult,
+    CheckStatusRequest,
+    OrderStatusResponse,
     RefundItem,
     RefundRequest,
     RefundResponse,
@@ -253,6 +255,44 @@ class AsyncPolakoClient:
             f"/v1/session/{session_id}/refund/signed",
             request_body=request,
             response_model=RefundResponse,
+        )
+
+    async def check_order_status(
+        self,
+        session_id: UUID,
+        platform_id: UUID,
+        secret_key: str,
+    ) -> OrderStatusResponse:
+        """
+        Check the status of a payment session.
+
+        Args:
+            session_id: Payment session UUID to check
+            platform_id: Platform identifier UUID for authentication
+            secret_key: Secret key used for generating request signature
+
+        Returns:
+            OrderStatusResponse containing session status and details
+
+        Raises:
+            HttpRequestError: If the API request fails
+            HttpClientError: If there's a network error
+        """
+        signature = self._create_signature(
+            f"status|{session_id}|{platform_id}",
+            secret_key,
+        )
+
+        request = CheckStatusRequest(
+            platform_id=platform_id,
+            session_id=session_id,
+            signature=signature,
+        )
+
+        return await self._http_client.post(
+            f"/v1/session/{session_id}/status/signed",
+            request_body=request,
+            response_model=OrderStatusResponse,
         )
 
     @staticmethod
