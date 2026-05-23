@@ -48,7 +48,7 @@ from polako.sdk._order import (
     ShoppingCart,
 )
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 __all__ = [
     # Client
