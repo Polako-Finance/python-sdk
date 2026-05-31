@@ -10,12 +10,12 @@ Active. Minimal migration impact.
 
 | Branch | Purpose | Status |
 |--------|---------|--------|
-| `main` | Production | Stable (tag: `release-v0.1.6`) |
+| `main` | Production | Stable (tag: `release-v0.1.7`) |
 | `develop` | Development | Active |
-| `feature/add-one-go-orders` | One-go order feature | In progress |
 
 ## Releases
 
 - **v0.1.4** — Added `/v1/` API prefix to all endpoints (gateway path migration)
 - **v0.1.5** — `generic_signed` schema 1.1 update
-- **v0.1.6** (2026-05-19) — Latest tagged release; pinned in submodule
+- **v0.1.6** (2026-05-19) — Expose refunded items + amounts in PaymentCallback
+- **v0.1.7** (2026-05-26) — `check_order_status()` for querying payment status + `refund_session()` for full/partial refunds; both use HMAC-SHA256 signature authentication
