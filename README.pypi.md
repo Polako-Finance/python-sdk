@@ -113,7 +113,7 @@ if callback.success:
 else:
     print(f"Payment failed for order: {callback.order_id}")
 
-# Merchant info is included in the callback (v0.1.8+)
+# Merchant info is included in the callback (v0.1.9+)
 if callback.merchant:
     print(f"Merchant: {callback.merchant.name}")
     print(f"PIB: {callback.merchant.pib}")
