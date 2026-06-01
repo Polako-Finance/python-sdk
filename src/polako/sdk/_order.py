@@ -164,6 +164,22 @@ class RefundedItem(Serializable):
 
 
 @dataclass
+class MerchantInfo(Serializable):
+    """
+    Merchant information included in payment callbacks.
+
+    Attributes:
+        name: Merchant legal name
+        pib: Merchant tax identification number (PIB)
+        address: Merchant address
+    """
+
+    name: Optional[str] = None
+    pib: Optional[str] = None
+    address: Optional[str] = None
+
+
+@dataclass
 class PaymentCallback:
     """
     Parsed payment callback data from the gateway.
@@ -181,6 +197,7 @@ class PaymentCallback:
         callback_type: Callback type — "payment" or "refund" (schema 1.1 only)
         session_id: Payment session UUID (schema 1.1 only)
         schema_version: Callback schema version — None for legacy, "1.1" for signed
+        merchant: Merchant information (name, PIB, address)
         refunded_amount: Amount refunded (refund callbacks only)
         refunded_items: Items included in the refund (refund callbacks only)
         refundable: Remaining refundable amount after this refund (refund callbacks only)
@@ -196,6 +213,7 @@ class PaymentCallback:
     callback_type: Optional[str] = None
     session_id: Optional[str] = None
     schema_version: Optional[str] = None
+    merchant: Optional[MerchantInfo] = None
     refunded_amount: Optional[Decimal] = None
     refunded_items: Optional[List[RefundedItem]] = None
     refundable: Optional[Decimal] = None
@@ -217,6 +235,7 @@ class PaymentCallbackRaw(Serializable):
     tx_meta: Dict[str, Any]
     datetime: str
     signature: str
+    merchant: Optional[Dict[str, Any]] = None
 
     def to_callback(self) -> PaymentCallback:
         """
@@ -233,6 +252,7 @@ class PaymentCallbackRaw(Serializable):
             tx_id=self.tx_id,
             tx_meta=self.tx_meta,
             datetime=datetime.strptime(self.datetime, "%Y-%m-%d %H:%M"),
+            merchant=MerchantInfo.from_dict(self.merchant) if self.merchant else None,
         )
 
 
@@ -252,6 +272,7 @@ class SignedPaymentCallbackRaw(Serializable):
     timestamp: str
     currency: str
     total: Optional[str] = None
+    merchant: Optional[Dict[str, Any]] = None
     refunded_amount: Optional[str] = None
     refunded_items: Optional[List[Dict[str, Any]]] = None
     refundable: Optional[float] = None
@@ -281,6 +302,7 @@ class SignedPaymentCallbackRaw(Serializable):
             callback_type=self.type,
             session_id=self.session_id,
             schema_version=self.schema,
+            merchant=MerchantInfo.from_dict(self.merchant) if self.merchant else None,
             refunded_amount=Decimal(self.refunded_amount) if self.refunded_amount else None,
             refunded_items=parsed_items,
             refundable=Decimal(str(self.refundable)) if self.refundable is not None else None,

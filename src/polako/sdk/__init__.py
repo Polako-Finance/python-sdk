@@ -31,6 +31,7 @@ from polako.sdk._order import (
     CustomerAddress,
     CustomerInfo,
     InitCustomerInfo,
+    MerchantInfo,
     OrderDetails,
     OrderItem,
     OrderStatusItem,
@@ -48,7 +49,7 @@ from polako.sdk._order import (
     ShoppingCart,
 )
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 __all__ = [
     # Client
@@ -58,6 +59,7 @@ __all__ = [
     "CustomerAddress",
     "CustomerInfo",
     "InitCustomerInfo",
+    "MerchantInfo",
     "OrderDetails",
     "OrderItem",
     "OrderStatusItem",
