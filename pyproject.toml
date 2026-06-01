@@ -6,7 +6,7 @@ authors = [{ name = "Polako Finance", email = "support@polako-finance.com" }]
 readme = {content-type = "text/markdown", file = "README.pypi.md"}
 license = { text = "MIT" }
 keywords = ["polako-finance", "payments", "api", "payment-gateway", "async", "httpx"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -16,10 +16,10 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
@@ -52,11 +52,10 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 packages = [
     { include = "polako", from = "src" },
@@ -64,14 +63,14 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 httpx = {extras = ["http2"], version = "^0.25"}
 
 [tool.poetry.group.dev.dependencies]
-pytest = {version = ">=9.0.3", python = ">=3.10"}
+pytest = ">=9.0.3"
 pytest-asyncio = ">=0.21.1"
 pytest-cov = ">=4.1.0"
-black = {version = ">=26.3.1", python = ">=3.10"}
+black = ">=26.3.1"
 isort = ">=5.12.0"
 mypy = ">=1.5.1"
 flake8 = ">=7.0.0"
@@ -79,7 +78,7 @@ pre-commit = "^4.0.0"
 
 [tool.black]
 line-length = 128
-target-version = ['py39', 'py310', 'py311', 'py312']
+target-version = ['py310', 'py311', 'py312', 'py313']
 include = '\.pyi?$'
 
 [tool.isort]
