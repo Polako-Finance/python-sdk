@@ -34,7 +34,7 @@ poetry add polako-finance
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - httpx >= 0.25
 
 ## Quick Start
@@ -113,6 +113,12 @@ if callback.success:
     print(f"Amount: {callback.total} {callback.currency}")
 else:
     print(f"Payment failed for order: {callback.order_id}")
+
+# Merchant info is included in the callback (v0.1.8+)
+if callback.merchant:
+    print(f"Merchant: {callback.merchant.name}")
+    print(f"PIB: {callback.merchant.pib}")
+    print(f"Address: {callback.merchant.address}")
 ```
 
 ## Configuration
@@ -311,6 +317,7 @@ async with PolakoClient() as client:
 - `CustomerAddress` - Customer address details
 - `SessionInfo` - Payment session response
 - `PaymentCallback` - Parsed payment callback data
+- `MerchantInfo` - Merchant details from callbacks (name, PIB, address)
 
 ## Support
 

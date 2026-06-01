@@ -22,7 +22,7 @@ make build            # poetry build
 
 ## Code Conventions
 
-- **Python**: 3.9+ (broad compatibility for consumers)
+- **Python**: 3.10+ (broad compatibility for consumers)
 - **Line length**: 128 characters
 - **Formatting**: Black + isort (profile=black)
 - **Type checking**: mypy (Python 3.11 target)
@@ -33,4 +33,4 @@ make build            # poetry build
 - HMAC-SHA256 signature authentication (not Bearer tokens)
 - Targets payment-gateway endpoints (minimal migration impact)
 - Currencies: RSD | Languages: sr, en, ru
-- PyPI package: `polako-finance` v0.1.6
+- PyPI package: `polako-finance` v0.1.8
