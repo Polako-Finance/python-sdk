@@ -1,8 +1,8 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.4** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
-gate, wire aliases, the models, `create_subscription`, webhook signature check and `parse_subscription_webhook`. Not yet: the
-registration-failure parser, form rendering helper, README and example. Scope: **creating a subscription, full cycle**
+**Status: DRAFT v0.5** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
+`parse_registration_failed`. Not yet: the form rendering helper, README and example. Scope: **creating a subscription, full cycle**
 (create, render the 3DS form, receive webhooks). Subscription management is out of scope until it is decided whether merchants
 should manage subscriptions from their own code (see Open questions).
 
@@ -50,8 +50,9 @@ unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptS
   - `charge_succeeded`: `event`, `subscription_id`, `merchant_subscription_ref`, `amount` (string), `currency`, `charged_at` (ISO)
   - `charge_failed`: `event`, `subscription_id`, `merchant_subscription_ref`, `error_class`
   - `dropped_externally`, `cancelled`: `event`, `subscription_id`, `merchant_subscription_ref`
-- Registration failure goes to the `errorUrl` of the subscription: no `event` field; `order_id`, `subscription_id`,
-  `merchant_subscription_ref`, `success` (0), `error_message`, `provider_name`; one attempt, 10 s timeout, no retries.
+- Registration failure goes to the `errorUrl` of the subscription: no `event` field; `order_id` (always equal to
+  `subscription_id`), `subscription_id`, `merchant_subscription_ref`, `success` (always 0), `error_message`,
+  `provider_name`; one attempt, 10 s timeout, no retries.
   Signed with the same scheme when the subscription is linked to a platform (always true for subscriptions created with a
   platform API key), otherwise sent without `X-Signature`.
 - Cancelling is console-only (JWT), so the end-to-end example ends at receiving the `cancelled` webhook.
@@ -127,7 +128,7 @@ async def subscription_error(request: Request):
 | Result | `SubscriptionCreated`: `subscription_id`, `registration_form`, `idempotency_key` (the one used, also when generated) |
 | Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
-| Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed` with `signature_verified` |
+| Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed`: `subscription_id` (a `UUID`), `merchant_subscription_ref`, `error_message`, `provider_name` (each may be `None` but the id), `signature_verified`; immutable. The model states that it has no event (`event = None`, unlike every lifecycle event) and that `success = 0`; `order_id` is not kept because it always equals `subscription_id` |
 | Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` (a `WebhookSignatureError`), `WebhookPayloadError` (a `ValueError`: the signed body is not JSON, not an object, has no event name, or a field is missing or malformed) |
 
 Behaviour rules:
@@ -145,6 +146,15 @@ Behaviour rules:
 - A webhook is verified before it is read: the signature is checked over the raw body exactly as received, and only then
   is the body decoded (UTF-8 JSON only, a JSON object). A forged body is a `WebhookSignatureError` whatever it contains,
   never a `WebhookPayloadError`. A body that was parsed and serialized again does not match; the docs say so.
+- The registration-failure notification and the lifecycle events are told apart explicitly, in both directions. A body
+  with an `event` field is not a registration failure: `parse_registration_failed` rejects it and points to
+  `parse_subscription_webhook`. A body with `success` and no `event` is not a lifecycle event: the lifecycle parser rejects
+  it and points to `parse_registration_failed`. In a registration failure `success` must be `0` or `false` (a missing or
+  `null` one is accepted); anything else is rejected as not being a failure.
+- A signature that is present on a registration failure is always checked, whatever `allow_unsigned` says; a wrong one is
+  never accepted. A missing (or blank) signature is rejected unless `allow_unsigned=True`, and then the result has
+  `signature_verified=False` and is otherwise read and validated exactly like a signed one. `allow_unsigned` is
+  keyword-only, and an empty `api_key` is a `ConfigurationError` in every mode.
 - Times with a trailing `Z` are read as UTC on every supported Python version. An unknown event name is returned, not
   raised; unknown fields of a known event are ignored.
 - Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
@@ -154,15 +164,15 @@ Behaviour rules:
 
 | Name | Decision | State |
 |------|----------|-------|
-| result-with-key | `create_subscription` returns a result object carrying the used idempotency key; the caller may pass their own key (recommended) | assumed |
-| client-config | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key` | assumed |
-| unsigned-registration | A registration failure without a signature is rejected unless `allow_unsigned=True` | assumed |
-| currency-checked-by-server | `currency` is a plain string validated by the server (SDK constants know only RSD, the gateway knows RSD, RUB, EUR, USD and applies a platform-wide allow-list that answers 422) | assumed |
-| unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | assumed |
-| retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | assumed |
+| result-with-key | `create_subscription` returns a result object carrying the used idempotency key; the caller may pass their own key (recommended) | implemented |
+| client-config | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key` | implemented |
+| unsigned-registration | A registration failure without a signature is rejected unless `allow_unsigned=True` | implemented |
+| currency-checked-by-server | `currency` is a plain string validated by the server (SDK constants know only RSD, the gateway knows RSD, RUB, EUR, USD and applies a platform-wide allow-list that answers 422) | implemented |
+| unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | implemented |
+| retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | implemented |
 | redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | assumed |
 
-"Assumed" means: agreed as the working choice on 2026-10-08, to be confirmed or changed; change it here first.
+"Assumed" means: agreed as the working choice on 2026-10-08, not built yet, to be confirmed or changed. "Implemented" means the code follows it. Both stay open to change; change it here first.
 
 ## Open questions
 
@@ -180,3 +190,4 @@ Behaviour rules:
 | 2026-10-08 | v0.2: checked against the gateway. The `iframe` form type turned out to be a redirect URL, so the model is named `RedirectForm` and is rendered as a redirect, not an iframe. Corrected the currency note: the allow-list is platform-wide (set by the platform operator), not per company, and answers 422. Contract notes added: `callback_url` is set in the platform settings; `company_id` is not shown in the platform settings |
 | 2026-10-08 | v0.3: exceptions, retry gate, aliases, models and `create_subscription` implemented. Added to the spec what the code now does: `ConfigurationError`, `UnknownRegistrationFormError` as the cause of a read failure, client-side argument checks, plain-decimal `amount`, immutable result, API key hidden in `repr`. No change to the agreed example or signatures |
 | 2026-10-08 | v0.4: the signature check and `parse_subscription_webhook` implemented. Added to the spec: `WebhookPayloadError`, the `SubscriptionWebhookEvent` alias, the event fields, verify-before-read rule, UTF-8 only. The merchant example now reads the header with `.get("X-Signature")` and the function accepts a missing header (it raises `MissingSignatureError`), instead of a `KeyError` in the merchant's code |
+| 2026-10-08 | v0.5: `parse_registration_failed` implemented, with the `allow_unsigned` policy. Added to the spec: the registration failure is a model of its own with `event = None` and `success = 0`, and the two parsers reject each other's bodies with a pointer to the right function; `success` must be 0 or false (missing accepted); `order_id` always equals `subscription_id` and is not kept; a present signature is always checked, a missing one is rejected unless `allow_unsigned=True`. Decisions that the code now follows are marked implemented |

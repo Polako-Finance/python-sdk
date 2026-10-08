@@ -121,13 +121,16 @@ def parse_subscription_webhook(body: Union[bytes, str], signature: Optional[str]
         WebhookPayloadError: If the signed body is not a valid event
     """
     verify_webhook_signature(body, signature, api_key)
+    return parse_subscription_event(_decode_json(body))
 
+
+def _decode_json(body: Union[bytes, str]) -> Any:
+    """Read a webhook body as UTF-8 JSON; the gateway sends nothing else."""
     raw = body.encode("utf-8") if isinstance(body, str) else bytes(body)
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except ValueError:  # UnicodeDecodeError and json.JSONDecodeError are both ValueErrors
         raise WebhookPayloadError("the webhook body is not valid JSON") from None
-    return parse_subscription_event(payload)
 
 
 def parse_registration_failure_payload(payload: Dict[str, Any], *, signature_verified: bool) -> RegistrationFailed:
@@ -160,6 +163,49 @@ def parse_registration_failure_payload(payload: Dict[str, Any], *, signature_ver
         provider_name=_optional_text(payload, what, "provider_name"),
         signature_verified=signature_verified,
     )
+
+
+def parse_registration_failed(
+    body: Union[bytes, str], signature: Optional[str], api_key: str, *, allow_unsigned: bool = False
+) -> RegistrationFailed:
+    """
+    Check and read the notification the gateway POSTs to your ``error_url`` when a card registration fails.
+
+    Unlike the subscription webhooks this body has no ``event`` field; use this function for the ``error_url`` and
+    ``parse_subscription_webhook`` for the webhook URL of your platform. The signature is checked first, over the raw
+    body exactly as received, the same way as for the other webhooks. The notification's ``order_id`` always equals its
+    ``subscription_id``.
+
+    The gateway signs this notification whenever the subscription was created with the API key of a platform, which is
+    always the case for subscriptions made with ``create_subscription``. Older subscriptions may have no platform and
+    then the notification comes without a signature. Pass ``allow_unsigned=True`` to accept those too: the result then
+    has ``signature_verified`` false, and anyone who knows your URL can send you such a notification, so treat it as a
+    hint to look the subscription up and not as proof. A signature that is present is always checked, with or without
+    this flag: a wrong one is never accepted.
+
+    Args:
+        body: The raw request body
+        signature: The value of the ``X-Signature`` header, None if the header is absent
+        api_key: The API key of your platform
+        allow_unsigned: Accept a notification that has no signature (default: reject it)
+
+    Returns:
+        A ``RegistrationFailed``; ``signature_verified`` is false only for an accepted unsigned notification
+
+    Raises:
+        ConfigurationError: If ``api_key`` is empty
+        MissingSignatureError: If there is no signature and ``allow_unsigned`` is not set
+        WebhookSignatureError: If a signature is present and does not match the body
+        WebhookPayloadError: If the body is not a valid registration-failure notification (for example it is a
+            subscription event)
+    """
+    if not api_key:
+        raise ConfigurationError("'api_key' is required to read a registration-failure notification")
+    if allow_unsigned and (signature is None or not signature.strip()):
+        return parse_registration_failure_payload(_decode_json(body), signature_verified=False)
+
+    verify_webhook_signature(body, signature, api_key)
+    return parse_registration_failure_payload(_decode_json(body), signature_verified=True)
 
 
 def _required(payload: Dict[str, Any], what: str, field: str) -> Any:

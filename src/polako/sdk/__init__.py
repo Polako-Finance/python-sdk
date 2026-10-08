@@ -77,6 +77,7 @@ from polako.sdk._webhook import (
     SubscriptionCancelled,
     SubscriptionWebhookEvent,
     UnknownSubscriptionEvent,
+    parse_registration_failed,
     parse_subscription_webhook,
 )
 
@@ -120,6 +121,7 @@ __all__ = [
     "RegistrationFailed",
     "SubscriptionWebhookEvent",
     "parse_subscription_webhook",
+    "parse_registration_failed",
     # Exceptions
     "ConfigurationError",
     "WebhookSignatureError",
