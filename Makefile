@@ -18,26 +18,28 @@ help: ## Show this help message
 install: ## Install dependencies
 	@echo "$(BLUE)Installing dependencies...$(NC)"
 	poetry install
+	poetry -C tests install
 	@echo "$(GREEN)✓ Dependencies installed$(NC)"
 
 install-dev: ## Install development dependencies
 	@echo "$(BLUE)Installing development dependencies...$(NC)"
 	poetry install --with dev
+	poetry -C tests install
 	poetry run pre-commit install
 	@echo "$(GREEN)✓ Development environment ready$(NC)"
 
 test: ## Run tests
 	@echo "$(BLUE)Running tests...$(NC)"
-	poetry run pytest tests/ -v --tb=short
+	poetry -C tests run pytest
 
 test-cov: ## Run tests with coverage
 	@echo "$(BLUE)Running tests with coverage...$(NC)"
-	poetry run pytest tests/ -v --cov=polako.sdk --cov-report=html --cov-report=term
-	@echo "$(GREEN)✓ Coverage report generated in htmlcov/$(NC)"
+	poetry -C tests run pytest --cov=polako.sdk --cov-report=html --cov-report=term
+	@echo "$(GREEN)✓ Coverage report generated in tests/htmlcov/$(NC)"
 
 test-watch: ## Run tests in watch mode
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	poetry run pytest-watch tests/ -v
+	poetry -C tests run pytest-watch . -v
 
 lint: ## Run linters
 	@echo "$(BLUE)Running linters...$(NC)"

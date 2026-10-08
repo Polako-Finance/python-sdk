@@ -14,8 +14,8 @@ This module is part of the **Polako Finance** platform.
 ## Common Commands
 
 ```bash
-make install          # poetry install
-make test             # pytest
+make install          # poetry install (SDK) + poetry -C tests install (tests)
+make test             # poetry -C tests run pytest (tests are a separate Poetry project in tests/)
 make lint             # black, isort, flake8, mypy
 make build            # poetry build
 ```

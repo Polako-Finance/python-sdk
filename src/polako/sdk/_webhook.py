@@ -62,6 +62,29 @@ class SubscriptionCancelled:
 
 
 @dataclass(frozen=True)
+class RegistrationFailed:
+    """
+    The customer's card registration for a subscription failed, so the subscription will never become active.
+
+    The gateway sends this to the ``error_url`` you gave when creating the subscription. Unlike the lifecycle events it
+    has no ``event`` field (``event`` is None here), and it always says ``success`` = 0 on the wire. Its ``order_id``
+    field always equals ``subscription_id``; the model therefore keeps only ``subscription_id``.
+
+    ``signature_verified`` tells whether the notification carried a valid signature. It is False only when you
+    explicitly allowed unsigned notifications and the gateway sent none.
+    """
+
+    event: ClassVar[None] = None
+    success: ClassVar[int] = 0
+
+    subscription_id: UUID
+    merchant_subscription_ref: Optional[str]
+    error_message: Optional[str]
+    provider_name: Optional[str]
+    signature_verified: bool
+
+
+@dataclass(frozen=True)
 class UnknownSubscriptionEvent:
     """An event this version of the SDK does not know. ``data`` is the whole payload as received."""
 
@@ -107,53 +130,89 @@ def parse_subscription_webhook(body: Union[bytes, str], signature: Optional[str]
     return parse_subscription_event(payload)
 
 
-def _required(payload: Dict[str, Any], event: str, field: str) -> Any:
+def parse_registration_failure_payload(payload: Dict[str, Any], *, signature_verified: bool) -> RegistrationFailed:
+    """
+    Turn the decoded body of a registration-failure notification into a ``RegistrationFailed``.
+
+    The body must have no ``event`` field (that would make it a subscription event) and must not say ``success``
+    other than 0 (the gateway always sends 0 here; a missing ``success`` is accepted).
+
+    Raises:
+        WebhookPayloadError: If the payload is not an object, has an ``event`` field, says ``success`` other than 0,
+            or ``subscription_id`` is missing or malformed
+    """
+    what = "registration failure"
+    if not isinstance(payload, dict):
+        raise WebhookPayloadError("the webhook payload must be a JSON object")
+    if "event" in payload:
+        raise WebhookPayloadError(
+            "this body has an 'event' field, so it is a subscription event, not a registration failure: "
+            "read it with parse_subscription_webhook"
+        )
+    success = payload.get("success")
+    if success is not None and not (success is False or (type(success) is int and success == 0)):
+        raise WebhookPayloadError(f"{what}: 'success' must be 0, got {success!r}")
+
+    return RegistrationFailed(
+        subscription_id=_uuid(payload, what, "subscription_id"),
+        merchant_subscription_ref=_optional_text(payload, what, "merchant_subscription_ref"),
+        error_message=_optional_text(payload, what, "error_message"),
+        provider_name=_optional_text(payload, what, "provider_name"),
+        signature_verified=signature_verified,
+    )
+
+
+def _required(payload: Dict[str, Any], what: str, field: str) -> Any:
     value = payload.get(field)
     if value is None:
-        raise WebhookPayloadError(f"'{event}' event: required field '{field}' is missing")
+        raise WebhookPayloadError(f"{what}: required field '{field}' is missing")
     return value
 
 
-def _text(payload: Dict[str, Any], event: str, field: str) -> str:
-    value = _required(payload, event, field)
+def _text(payload: Dict[str, Any], what: str, field: str) -> str:
+    value = _required(payload, what, field)
     if not isinstance(value, str):
-        raise WebhookPayloadError(f"'{event}' event: '{field}' must be a string")
+        raise WebhookPayloadError(f"{what}: '{field}' must be a string")
     return value
 
 
-def _uuid(payload: Dict[str, Any], event: str, field: str) -> UUID:
-    value = _text(payload, event, field)
+def _uuid(payload: Dict[str, Any], what: str, field: str) -> UUID:
+    value = _text(payload, what, field)
     try:
         return UUID(value)
     except ValueError:
-        raise WebhookPayloadError(f"'{event}' event: '{field}' is not a valid UUID") from None
+        raise WebhookPayloadError(f"{what}: '{field}' is not a valid UUID") from None
 
 
-def _amount(payload: Dict[str, Any], event: str, field: str) -> Decimal:
-    value = _text(payload, event, field)
+def _amount(payload: Dict[str, Any], what: str, field: str) -> Decimal:
+    value = _text(payload, what, field)
     try:
         amount = Decimal(value)
     except InvalidOperation:
-        raise WebhookPayloadError(f"'{event}' event: '{field}' is not a valid amount") from None
+        raise WebhookPayloadError(f"{what}: '{field}' is not a valid amount") from None
     if not amount.is_finite():
-        raise WebhookPayloadError(f"'{event}' event: '{field}' is not a valid amount")
+        raise WebhookPayloadError(f"{what}: '{field}' is not a valid amount")
     return amount
 
 
-def _moment(payload: Dict[str, Any], event: str, field: str) -> datetime:
-    value = _text(payload, event, field)
+def _moment(payload: Dict[str, Any], what: str, field: str) -> datetime:
+    value = _text(payload, what, field)
     try:
         # Python 3.10 does not read a trailing "Z" as UTC.
         return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     except ValueError:
-        raise WebhookPayloadError(f"'{event}' event: '{field}' is not a valid ISO 8601 time") from None
+        raise WebhookPayloadError(f"{what}: '{field}' is not a valid ISO 8601 time") from None
 
 
-def _reference(payload: Dict[str, Any], event: str) -> Optional[str]:
-    value = payload.get("merchant_subscription_ref")
+def _optional_text(payload: Dict[str, Any], what: str, field: str) -> Optional[str]:
+    value = payload.get(field)
     if value is not None and not isinstance(value, str):
-        raise WebhookPayloadError(f"'{event}' event: 'merchant_subscription_ref' must be a string")
+        raise WebhookPayloadError(f"{what}: '{field}' must be a string")
     return value
+
+
+def _reference(payload: Dict[str, Any], what: str) -> Optional[str]:
+    return _optional_text(payload, what, "merchant_subscription_ref")
 
 
 def parse_subscription_event(payload: Dict[str, Any]) -> SubscriptionWebhookEvent:
@@ -171,31 +230,37 @@ def parse_subscription_event(payload: Dict[str, Any]) -> SubscriptionWebhookEven
         raise WebhookPayloadError("the webhook payload must be a JSON object")
     name = payload.get("event")
     if not isinstance(name, str) or not name:
+        if "event" not in payload and "success" in payload:
+            raise WebhookPayloadError(
+                "the webhook payload has no 'event' name; a body with 'success' and no 'event' is a registration "
+                "failure: read it with parse_registration_failed"
+            )
         raise WebhookPayloadError("the webhook payload has no 'event' name")
+    what = f"'{name}' event"
 
     if name == ChargeSucceeded.event:
         return ChargeSucceeded(
-            subscription_id=_uuid(payload, name, "subscription_id"),
-            merchant_subscription_ref=_reference(payload, name),
-            amount=_amount(payload, name, "amount"),
-            currency=_text(payload, name, "currency"),
-            charged_at=_moment(payload, name, "charged_at"),
+            subscription_id=_uuid(payload, what, "subscription_id"),
+            merchant_subscription_ref=_reference(payload, what),
+            amount=_amount(payload, what, "amount"),
+            currency=_text(payload, what, "currency"),
+            charged_at=_moment(payload, what, "charged_at"),
         )
     if name == ChargeFailed.event:
         return ChargeFailed(
-            subscription_id=_uuid(payload, name, "subscription_id"),
-            merchant_subscription_ref=_reference(payload, name),
-            error_class=_text(payload, name, "error_class"),
+            subscription_id=_uuid(payload, what, "subscription_id"),
+            merchant_subscription_ref=_reference(payload, what),
+            error_class=_text(payload, what, "error_class"),
         )
     if name == DroppedExternally.event:
         return DroppedExternally(
-            subscription_id=_uuid(payload, name, "subscription_id"),
-            merchant_subscription_ref=_reference(payload, name),
+            subscription_id=_uuid(payload, what, "subscription_id"),
+            merchant_subscription_ref=_reference(payload, what),
         )
     if name == SubscriptionCancelled.event:
         return SubscriptionCancelled(
-            subscription_id=_uuid(payload, name, "subscription_id"),
-            merchant_subscription_ref=_reference(payload, name),
+            subscription_id=_uuid(payload, what, "subscription_id"),
+            merchant_subscription_ref=_reference(payload, what),
         )
     return UnknownSubscriptionEvent(event=name, data=payload)
 

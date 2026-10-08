@@ -254,8 +254,11 @@ order = OrderDetails(
 git clone https://github.com/Polako-Finance/python-sdk.git
 cd python-sdk
 
-# Install dependencies using poetry
+# Install the SDK and its development tools using poetry
 poetry install
+
+# Install the tests (a separate project, see below)
+poetry -C tests install
 
 # Activate virtual environment
 poetry shell
@@ -263,15 +266,19 @@ poetry shell
 
 ### Running Tests
 
+The tests are a separate Poetry project in `tests/` with its own dependencies and lock file. They install the SDK from
+the repository root in editable mode, and building the SDK never needs them. You can read them in the repository to see
+how the SDK is used.
+
 ```bash
 # Run all tests
-poetry run pytest
+poetry -C tests run pytest
 
 # Run with coverage of the SDK package
-poetry run pytest --cov=polako.sdk --cov-report=term
+poetry -C tests run pytest --cov=polako.sdk --cov-report=term
 
 # Run a specific test file
-poetry run pytest tests/test_client.py
+poetry -C tests run pytest test_client.py
 ```
 
 The tests run against an in-process fake gateway and never use the network.

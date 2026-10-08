@@ -73,6 +73,7 @@ from polako.sdk._webhook import (
     ChargeFailed,
     ChargeSucceeded,
     DroppedExternally,
+    RegistrationFailed,
     SubscriptionCancelled,
     SubscriptionWebhookEvent,
     UnknownSubscriptionEvent,
@@ -116,6 +117,7 @@ __all__ = [
     "DroppedExternally",
     "SubscriptionCancelled",
     "UnknownSubscriptionEvent",
+    "RegistrationFailed",
     "SubscriptionWebhookEvent",
     "parse_subscription_webhook",
     # Exceptions

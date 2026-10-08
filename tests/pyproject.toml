@@ -1,0 +1,34 @@
+# The tests of the polako-finance SDK, kept as a separate project: it is never published, and building the SDK
+# does not need it. It installs the SDK from the parent directory in editable mode.
+#
+#   poetry -C tests install
+#   poetry -C tests run pytest
+
+[tool.poetry]
+name = "polako-finance-tests"
+version = "0.0.0"
+description = "Tests of the polako-finance SDK (not published)"
+authors = ["Polako Finance <support@polako-finance.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+polako-finance = { path = "..", develop = true }
+pytest = ">=9.0.3"
+pytest-asyncio = ">=0.21.1"
+pytest-cov = ">=4.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

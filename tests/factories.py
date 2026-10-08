@@ -196,6 +196,21 @@ def make_cancelled_payload(**overrides: Any) -> Dict[str, Any]:
     return payload
 
 
+def make_registration_failed_payload(**overrides: Any) -> Dict[str, Any]:
+    """The notification sent to `error_url`: no `event` field, `success` is 0, `order_id` equals `subscription_id`."""
+    subscription_id = str(uuid4())
+    payload: Dict[str, Any] = {
+        "order_id": subscription_id,
+        "subscription_id": subscription_id,
+        "merchant_subscription_ref": generate_readable_string(READABLE_STRING_LENGTH),
+        "success": 0,
+        "error_message": generate_readable_string(READABLE_STRING_LENGTH),
+        "provider_name": generate_readable_string(READABLE_STRING_LENGTH),
+    }
+    payload.update(overrides)
+    return payload
+
+
 def make_unknown_event_payload(**overrides: Any) -> Dict[str, Any]:
     """An event of a kind the SDK does not know, with a few fields of its own."""
     payload: Dict[str, Any] = {
