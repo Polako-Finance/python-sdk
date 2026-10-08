@@ -32,10 +32,12 @@ from polako.sdk._exceptions import (
     ForbiddenError,
     HttpClientError,
     HttpRequestError,
+    MissingSignatureError,
     RateLimitedError,
     RequestValidationError,
     ServerError,
     UnauthorizedError,
+    WebhookSignatureError,
 )
 from polako.sdk._order import (
     CartItem,
@@ -101,6 +103,8 @@ __all__ = [
     "SubscriptionCreated",
     # Exceptions
     "ConfigurationError",
+    "WebhookSignatureError",
+    "MissingSignatureError",
     "UnknownRegistrationFormError",
     "HttpClientError",
     "HttpRequestError",

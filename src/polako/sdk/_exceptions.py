@@ -7,6 +7,14 @@ class ConfigurationError(ValueError):
     """The client is not configured for the requested call (e.g. no company ID or API key for a subscription)."""
 
 
+class WebhookSignatureError(Exception):
+    """The signature of a webhook does not match its body: the request was not sent by the gateway, or was altered."""
+
+
+class MissingSignatureError(WebhookSignatureError):
+    """A webhook came without a signature although one is required."""
+
+
 class HttpClientError(Exception):
     """Base exception for HTTP client errors."""
 

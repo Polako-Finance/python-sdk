@@ -6,6 +6,7 @@ The wire payloads have the shapes the gateway produces.
 
 import hashlib
 import hmac
+import json
 import random
 from decimal import Decimal
 from typing import Any, Dict, NamedTuple, Optional
@@ -132,6 +133,16 @@ def make_subscribe_response(form: Optional[Dict[str, Any]] = None, **overrides: 
     }
     response.update(overrides)
     return response
+
+
+def encode_webhook_body(payload: Dict[str, Any]) -> bytes:
+    """The bytes the gateway sends: compact JSON with sorted keys. The signature is made over exactly these."""
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+
+def sign_webhook_body(body: bytes, api_key: str) -> str:
+    """The `X-Signature` header value: HMAC-SHA256 hex digest of the raw body, written out independently of the SDK."""
+    return hmac.new(api_key.encode(), body, hashlib.sha256).hexdigest()
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Two runs never share values, and a test names a literal only when that literal i
 
 import random
 import string
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 
@@ -55,4 +55,4 @@ def generate_api_key() -> str:
 
 def generate_recent_datetime(days_ago: int = 0, hours_ago: int = 0) -> datetime:
     """A timezone-aware instant that many days or hours before now."""
-    return datetime.now(UTC) - timedelta(days=days_ago, hours=hours_ago)
+    return datetime.now(timezone.utc) - timedelta(days=days_ago, hours=hours_ago)
