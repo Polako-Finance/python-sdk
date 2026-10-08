@@ -1,10 +1,10 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.11** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+**Status: DRAFT v0.12** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
 gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
 `parse_registration_failed` and `render_registration_form`, plus the README section and the example. Scope: **creating a subscription, full cycle**
-(create, render the 3DS form, receive webhooks). Subscription management comes later, after the gateway accepts the platform API key
-for it (see Planned).
+(create, render the 3DS form, receive webhooks). Subscription management comes next: the server routes that accept the platform API key are built and wait for a release
+(see Planned).
 
 ## How to use this document
 
@@ -23,7 +23,7 @@ In: authentication of the create call, `create_subscription`, models for the req
 registration forms, form rendering helper, webhook parsers (four lifecycle events and the registration-failed
 notification), exceptions by HTTP status, retries for keyed requests.
 
-Out: management methods (detail, list, pause, resume, cancel, payments; blocked on the gateway, see Planned), retries for payment methods,
+Out: management methods (detail, list, pause, resume, cancel; waiting for the server release, see Planned), retries for payment methods,
 unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production,
 a public `verify_webhook_signature` (see Decisions).
 
@@ -56,7 +56,8 @@ a public `verify_webhook_signature` (see Decisions).
   `provider_name`; one attempt, 10 s timeout, no retries.
   Signed with the same scheme when the subscription is linked to a platform (always true for subscriptions created with a
   platform API key), otherwise sent without `X-Signature`.
-- Cancelling is console-only (JWT), so the end-to-end example ends at receiving the `cancelled` webhook.
+- Cancelling is console-only (JWT) in the released server, so the end-to-end example ends at receiving the `cancelled`
+  webhook. The routes that accept the platform API key for it are built and wait for a release (see Planned).
 
 ## Target merchant code (acceptance example)
 
@@ -129,24 +130,33 @@ Behaviour rules:
 | unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | implemented |
 | retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | implemented |
 | redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | implemented |
-| management-by-api-key | Merchants manage subscriptions (detail, list, pause, resume, cancel, payments) with the platform API key as well as from the dashboard; the gateway adds an external route for each operation and the SDK calls those. Decided 2026-10-08; the SDK methods wait for the gateway change | agreed, blocked on the gateway |
+| management-by-api-key | Merchants manage subscriptions (detail, list, pause, resume, cancel) with the platform API key as well as from the dashboard. One route per operation serves both: a dashboard login is used when the request carries one, otherwise the API key, and a login wins over a key sent beside it. The SDK methods call those routes with `company_api_key`. Decided 2026-10-08, route design 2026-10-09; the server side is built, the SDK methods wait for its release | agreed, waiting for the server release |
 | no-standalone-verify | The signature check is not a public function: `parse_subscription_webhook` and `parse_registration_failed` already verify, and a second entry point would invite reading the body without the checks. A merchant who queues webhooks passes the raw body and the `X-Signature` value to the worker and calls the parser there. Revisit if a real need appears, under a name that cannot be mistaken for the payment callback check | decided |
 
 "Assumed" means: agreed as the working choice on 2026-10-08, not built yet, to be confirmed or changed. "Implemented" means the code follows it. Both stay open to change; change it here first.
 
-## Planned: subscription management (blocked on the gateway)
+## Planned: subscription management (server side built, waiting for a release)
 
 Merchants will manage subscriptions from their own code with the same platform API key, as well as from the dashboard
-(decision `management-by-api-key`). Today these operations need a dashboard session and are not reachable with an API key
-at all, because the gateway checks the session before the request reaches the service. So for every operation the gateway
-gets a second, external route next to the dashboard one (as a payment session's refund and status already have), both
-served by the same service, and the SDK methods call the external routes with `company_api_key`. Until those routes exist
-the SDK has no management methods.
+(decision `management-by-api-key`). In the released server these operations need a dashboard session. The new server
+code serves the same routes to both kinds of caller: `GET /v1/company/{company_id}/subscriptions` (list), `GET
+.../{subscription_id}` (detail), and `PATCH .../{subscription_id}/pause`, `/resume`, `/cancel` (status 204). A request
+that carries the dashboard's login is treated as a dashboard call; one without it must carry `company_api_key`, which
+must belong to the company in the path. The SDK methods call these routes with `company_api_key`. Until the server is
+released the SDK has no management methods.
 
-Operations: the detail of a subscription, a list with filters, pause, resume, cancel (optionally refunding the last charge)
-and the payments of a subscription. Method names, signatures, models and errors are agreed here before they are written.
-Requirements already known: a subscription of another company is refused (HTTP 403); an illegal change of status must be
-distinguishable from a network error; reads are not retried without a key, a change that carries an `Idempotency-Key` is.
+What the server answers, for an API key: 401 for a missing or unknown key, 403 for the key of another company or for a
+subscription of another company, 404 for an unknown subscription, 409 when subscriptions are switched off for the company
+or the status does not allow the change (pause needs `active`, resume needs `paused`, a cancelled subscription accepts
+nothing), 422 for a malformed identifier. Reading is allowed even when subscriptions are switched off. A key has full
+authority over its company's subscriptions.
+
+Operations: the detail of a subscription (which carries the charge history and the event journal, so there is no separate
+route for the payments of a subscription), a list with filters, pause, resume and cancel. Cancelling does not refund; a
+refund goes through the payment refund. Method names, signatures, models and errors are agreed here before they are
+written. Requirements already known: a subscription of another company is refused (HTTP 403); an illegal change of status
+must be distinguishable from a network error; reads are not retried without a key, a change that carries an
+`Idempotency-Key` is (the server's management routes do not take one yet, so none is retried until they do).
 
 ## Open questions
 
@@ -156,8 +166,8 @@ distinguishable from a network error; reads are not retried without a key, a cha
 
 - Where a merchant finds their `company_id`: the Company info page of the dashboard shows it, read-only and copyable, at the
   right edge of the header strip that holds the company name, PIB and MB, for every member of the company. The README and the
-  examples say so. (The key alone already identifies the company, so the new external routes for managing subscriptions may
-  leave `company_id` out of their path.)
+  examples say so. (The key alone already identifies the company, but the management routes keep `company_id` in their path
+  and check that it matches the key.)
 - Subscriptions are switched on for a company by Polako, not by the merchant; until then `create_subscription` raises
   `ConflictError`. The README says so.
 
@@ -176,3 +186,4 @@ distinguishable from a network error; reads are not retried without a key, a cha
 | 2026-10-08 | v0.9: decided not to export the signature check as a public function (decision `no-standalone-verify`). The open question about `company_id` now records what was found: the dashboard shows it nowhere, and the key already identifies the company |
 | 2026-10-08 | v0.10: the open question about `company_id` now records the agreed direction: the dashboard shows it on the Company info page, at the right edge of the header strip next to PIB and MB, read-only and copyable, for every member of the company. Not built yet; the README stays as it is until it is |
 | 2026-10-08 | v0.11: the dashboard shows the company ID on the Company info page, so the open question is closed and moved to a new section, Notes from the dashboard. The README and the examples now say where to find the ID, and that Polako switches subscriptions on for a company (otherwise `ConflictError`) |
+| 2026-10-09 | v0.12: the design of the management routes is settled: one route per operation serves both the dashboard login and the platform API key (a login wins over a key sent beside it), instead of a second external route per operation. Decision `management-by-api-key` and section Planned rewritten with the routes, the answers for an API key and the facts found while building it: no separate payments route (the detail carries the charge history), cancel does not refund, reading is not gated by the switch, the management routes take no `Idempotency-Key` yet. The server side is built and waits for a release, so the SDK methods are still not written |
