@@ -25,7 +25,16 @@ Example:
 """
 
 from polako.sdk._async_api import AsyncPolakoClient as PolakoClient
-from polako.sdk._exceptions import HttpClientError, HttpRequestError
+from polako.sdk._exceptions import (
+    ConflictError,
+    ForbiddenError,
+    HttpClientError,
+    HttpRequestError,
+    RateLimitedError,
+    RequestValidationError,
+    ServerError,
+    UnauthorizedError,
+)
 from polako.sdk._order import (
     CartItem,
     CustomerAddress,
@@ -78,4 +87,10 @@ __all__ = [
     # Exceptions
     "HttpClientError",
     "HttpRequestError",
+    "UnauthorizedError",
+    "ForbiddenError",
+    "ConflictError",
+    "RequestValidationError",
+    "RateLimitedError",
+    "ServerError",
 ]

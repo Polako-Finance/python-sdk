@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Exception classes per HTTP status, all subclasses of `HttpRequestError`: `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, with `retry_after`) and `ServerError` (5xx). Existing `except HttpRequestError` code keeps working.
+- The HTTP client retries a request that carries an `Idempotency-Key` on HTTP 429, HTTP 5xx and network errors (3 attempts, exponential backoff, `Retry-After` honoured, same key and body on every attempt). Requests without that header, including all payment methods, are still sent once.
+
 ### Fixed
 - `create_order()` without an explicit `language` now always defaults to Serbian (`sr`). Previously the default was picked from an unordered set and could be `sr`, `en` or `ru` between interpreter runs.
 

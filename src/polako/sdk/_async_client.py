@@ -1,14 +1,31 @@
 """Async HTTP client for Polako Finance API."""
 
+import asyncio
 import json
 from typing import Any, Dict, Literal, Optional, Type, TypeVar, Union
 
 import httpx
 
-from polako.sdk._exceptions import HttpClientError, HttpRequestError
+from polako.sdk._exceptions import HttpClientError, HttpRequestError, RateLimitedError, error_class_for_status
 from polako.sdk._serializable import Serializable
 
 T = TypeVar("T", bound=Serializable)
+
+IDEMPOTENCY_KEY_HEADER = "idempotency-key"
+
+# Indirection so tests can replace the wait between retries.
+_sleep = asyncio.sleep
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Seconds from a Retry-After header; None for a missing, negative or non-numeric value (e.g. an HTTP date)."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 class AsyncHttpClient:
@@ -17,6 +34,10 @@ class AsyncHttpClient:
 
     This client handles sending asynchronous requests to the gateway and parsing responses.
     Request and response bodies are serialized/deserialized using Serializable models.
+
+    Retries: a request is retried only when it carries an ``Idempotency-Key`` header, because only then a repeat cannot
+    do the work twice. Such a request is retried on HTTP 429, HTTP 5xx and network errors, with the same key and body,
+    up to ``max_attempts`` attempts in total. Every other request is sent exactly once.
     """
 
     def __init__(
@@ -24,6 +45,9 @@ class AsyncHttpClient:
         base_url: str,
         timeout: float = 30.0,
         headers: Optional[Dict[str, str]] = None,
+        max_attempts: int = 3,
+        retry_base_delay: float = 0.5,
+        retry_max_delay: float = 8.0,
     ):
         """
         Initialize the async HTTP client.
@@ -32,9 +56,15 @@ class AsyncHttpClient:
             base_url: Base URL of the payment gateway API
             timeout: Request timeout in seconds (default: 30.0)
             headers: Optional additional headers to include in all requests
+            max_attempts: Total attempts for a request that carries an Idempotency-Key (default: 3)
+            retry_base_delay: Delay before the first retry in seconds; doubles on every further retry (default: 0.5)
+            retry_max_delay: Upper bound for one wait, also the longest Retry-After that is waited for (default: 8.0)
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_attempts = max(1, max_attempts)
+        self.retry_base_delay = retry_base_delay
+        self.retry_max_delay = retry_max_delay
         self._default_headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -125,11 +155,16 @@ class AsyncHttpClient:
         response_text = response.text
 
         if not response.is_success:
-            raise HttpRequestError(
-                f"HTTP request failed with status {response.status_code}: {response_text}",
-                status_code=response.status_code,
-                response_body=response_text,
-            )
+            message = f"HTTP request failed with status {response.status_code}: {response_text}"
+            error_class = error_class_for_status(response.status_code)
+            if error_class is RateLimitedError:
+                raise RateLimitedError(
+                    message,
+                    status_code=response.status_code,
+                    response_body=response_text,
+                    retry_after=_parse_retry_after(response.headers.get("Retry-After")),
+                )
+            raise error_class(message, status_code=response.status_code, response_body=response_text)
 
         if response_model is None:
             return None
@@ -169,36 +204,68 @@ class AsyncHttpClient:
         url = f"{self.base_url}/{path.lstrip('/')}"
         request_headers = self._build_headers(headers)
         json_body = self._serialize_body(request_body)
+        max_attempts = self.max_attempts if self._has_idempotency_key(request_headers) else 1
 
         try:
-            if self._client:
-                # Using context manager client
-                response = await self._client.request(
-                    method=method,
-                    url=url,
-                    content=json_body,
-                    headers=request_headers,
-                    params=params,
-                )
-            else:
-                # One-off request
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.request(
-                        method=method,
-                        url=url,
-                        content=json_body,
-                        headers=request_headers,
-                        params=params,
-                    )
+            for attempt in range(1, max_attempts + 1):
+                is_last = attempt == max_attempts
+                try:
+                    response = await self._send(method, url, json_body, request_headers, params)
+                except httpx.RequestError as e:
+                    if is_last:
+                        raise HttpClientError(f"Network error during request: {e}") from e
+                    await _sleep(self._backoff(attempt))
+                    continue
 
-            return self._handle_response(response, response_model)
+                if not is_last and self._is_retryable(response.status_code):
+                    delay = self._retry_delay(attempt, response)
+                    if delay is not None:
+                        await _sleep(delay)
+                        continue
 
-        except httpx.RequestError as e:
-            raise HttpClientError(f"Network error during request: {e}") from e
-        except HttpRequestError:
+                return self._handle_response(response, response_model)
+
+            raise AssertionError("unreachable: the last attempt always returns or raises")
+        except HttpClientError:
             raise
         except Exception as e:
             raise HttpRequestError(f"Unexpected error during request: {e}") from e
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        content: Optional[str],
+        headers: Dict[str, str],
+        params: Optional[Dict[str, Any]],
+    ) -> httpx.Response:
+        """Send one HTTP request with the shared client, or with a one-off client outside the context manager."""
+        if self._client:
+            return await self._client.request(method=method, url=url, content=content, headers=headers, params=params)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            return await client.request(method=method, url=url, content=content, headers=headers, params=params)
+
+    @staticmethod
+    def _has_idempotency_key(headers: Dict[str, str]) -> bool:
+        return any(name.lower() == IDEMPOTENCY_KEY_HEADER for name in headers)
+
+    @staticmethod
+    def _is_retryable(status_code: int) -> bool:
+        return status_code == 429 or status_code >= 500
+
+    def _backoff(self, attempt: int) -> float:
+        """Exponential wait before retry number `attempt`, capped."""
+        return min(self.retry_base_delay * float(2 ** (attempt - 1)), self.retry_max_delay)
+
+    def _retry_delay(self, attempt: int, response: httpx.Response) -> Optional[float]:
+        """Seconds to wait before the next attempt, or None when waiting is not worth it (give up and raise)."""
+        delay = self._backoff(attempt)
+        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        if retry_after is None:
+            return delay
+        if retry_after > self.retry_max_delay:
+            return None
+        return max(delay, retry_after)
 
     async def get(
         self,

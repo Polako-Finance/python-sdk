@@ -1,7 +1,7 @@
 """Shared fixtures: an in-process fake gateway behind httpx.MockTransport."""
 
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 import pytest
@@ -9,6 +9,12 @@ import pytest
 from polako.sdk import PolakoClient
 
 Handler = Callable[[httpx.Request], httpx.Response]
+Step = Union[Dict[str, Any], Exception]
+
+
+def build_response(status: int = 200, body: Optional[Dict[str, Any]] = None, text: Optional[str] = None, headers=None):
+    content = text if text is not None else json.dumps(body if body is not None else {})
+    return httpx.Response(status, content=content, headers=headers)
 
 
 class FakeGateway:
@@ -18,9 +24,28 @@ class FakeGateway:
         self.requests: List[httpx.Request] = []
         self._handler: Optional[Handler] = None
 
-    def respond(self, status: int = 200, body: Optional[Dict[str, Any]] = None, text: Optional[str] = None) -> None:
-        content = text if text is not None else json.dumps(body if body is not None else {})
-        self._handler = lambda request: httpx.Response(status, content=content)
+    def respond(
+        self,
+        status: int = 200,
+        body: Optional[Dict[str, Any]] = None,
+        text: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
+        self._handler = lambda request: build_response(status, body, text, headers)
+
+    def sequence(self, *steps: Step) -> None:
+        """Answer the n-th request with the n-th step; the last step repeats.
+
+        A step is either a dict of `respond` arguments (status, body, text, headers) or an exception to raise.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            step = steps[min(len(self.requests) - 1, len(steps) - 1)]
+            if isinstance(step, Exception):
+                raise step
+            return build_response(**step)
+
+        self._handler = handler
 
     def fail(self, error: Exception) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -54,6 +79,18 @@ def gateway(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
 
     monkeypatch.setattr("polako.sdk._async_client.httpx.AsyncClient", factory)
     return fake
+
+
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> List[float]:
+    """Replace the SDK's retry sleep with a recorder, so retry tests run instantly."""
+    recorded: List[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        recorded.append(delay)
+
+    monkeypatch.setattr("polako.sdk._async_client._sleep", fake_sleep)
+    return recorded
 
 
 @pytest.fixture
