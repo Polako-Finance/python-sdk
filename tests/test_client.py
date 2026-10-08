@@ -43,8 +43,7 @@ async def test_create_order(client, gateway):
     assert gateway.last.url.path == "/v1/session/signed"
     body = gateway.last_json()
     assert body["currency"] == "RSD"
-    # The default is next(iter(set)), so which language wins varies between interpreter runs.
-    assert body["language"] in {"sr", "en", "ru"}
+    assert body["language"] == "sr"
     assert body["total"] == "200.00"
     assert body["signature"] == PolakoClient._create_signature("ORDER-1|200.00|RSD", SECRET)
 

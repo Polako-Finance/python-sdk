@@ -6,18 +6,18 @@ from uuid import UUID
 
 from polako.sdk._async_client import AsyncHttpClient
 from polako.sdk._order import (
+    CheckStatusRequest,
     CreateOrderRequest,
     CustomerAddress,
     CustomerInfo,
     InitCustomerInfo,
     OrderDetails,
+    OrderStatusResponse,
     PaymentCallback,
     PaymentCallbackRaw,
     PaymentSessionDetails,
     PaymentUrlRequest,
     PaymentUrlResult,
-    CheckStatusRequest,
-    OrderStatusResponse,
     RefundItem,
     RefundRequest,
     RefundResponse,
@@ -96,11 +96,11 @@ class AsyncPolakoClient:
         order.validate()
         customer.validate()
 
-        from polako.sdk._constants import CURRENCIES, LANGUAGES
+        from polako.sdk._constants import CURRENCIES, DEFAULT_LANGUAGE
 
         # Prepare values
         currency = order.currency or next(iter(CURRENCIES))
-        language = order.language or next(iter(LANGUAGES))
+        language = order.language or DEFAULT_LANGUAGE
         total = order.total.quantize(Decimal("0.01"))
 
         # Create signature

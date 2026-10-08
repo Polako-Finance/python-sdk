@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `create_order()` without an explicit `language` now always defaults to Serbian (`sr`). Previously the default was picked from an unordered set and could be `sr`, `en` or `ru` between interpreter runs.
+
 ## [0.1.9] - 2026-06-01
 
 ### Changed
