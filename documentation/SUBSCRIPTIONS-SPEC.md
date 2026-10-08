@@ -1,6 +1,6 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.8** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+**Status: DRAFT v0.11** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
 gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
 `parse_registration_failed` and `render_registration_form`, plus the README section and the example. Scope: **creating a subscription, full cycle**
 (create, render the 3DS form, receive webhooks). Subscription management comes later, after the gateway accepts the platform API key
@@ -24,7 +24,8 @@ registration forms, form rendering helper, webhook parsers (four lifecycle event
 notification), exceptions by HTTP status, retries for keyed requests.
 
 Out: management methods (detail, list, pause, resume, cancel, payments; blocked on the gateway, see Planned), retries for payment methods,
-unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production.
+unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production,
+a public `verify_webhook_signature` (see Decisions).
 
 ## Gateway contract (verified 2026-10-08)
 
@@ -129,6 +130,7 @@ Behaviour rules:
 | retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | implemented |
 | redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | implemented |
 | management-by-api-key | Merchants manage subscriptions (detail, list, pause, resume, cancel, payments) with the platform API key as well as from the dashboard; the gateway adds an external route for each operation and the SDK calls those. Decided 2026-10-08; the SDK methods wait for the gateway change | agreed, blocked on the gateway |
+| no-standalone-verify | The signature check is not a public function: `parse_subscription_webhook` and `parse_registration_failed` already verify, and a second entry point would invite reading the body without the checks. A merchant who queues webhooks passes the raw body and the `X-Signature` value to the worker and calls the parser there. Revisit if a real need appears, under a name that cannot be mistaken for the payment callback check | decided |
 
 "Assumed" means: agreed as the working choice on 2026-10-08, not built yet, to be confirmed or changed. "Implemented" means the code follows it. Both stay open to change; change it here first.
 
@@ -148,8 +150,16 @@ distinguishable from a network error; reads are not retried without a key, a cha
 
 ## Open questions
 
-- To confirm before the README is written: where a merchant finds their `company_id` (it is part of the create URL; the
-  platform settings show the platform ID and the API key), and whether test and production use separate platforms and keys.
+- Whether test and production use separate platforms and keys.
+
+## Notes from the dashboard
+
+- Where a merchant finds their `company_id`: the Company info page of the dashboard shows it, read-only and copyable, at the
+  right edge of the header strip that holds the company name, PIB and MB, for every member of the company. The README and the
+  examples say so. (The key alone already identifies the company, so the new external routes for managing subscriptions may
+  leave `company_id` out of their path.)
+- Subscriptions are switched on for a company by Polako, not by the merchant; until then `create_subscription` raises
+  `ConflictError`. The README says so.
 
 ## Change log
 
@@ -163,3 +173,6 @@ distinguishable from a network error; reads are not retried without a key, a cha
 | 2026-10-08 | v0.6: subscription management is no longer an open question. Decided that merchants manage subscriptions with the platform API key as well as from the dashboard, which needs an external route per operation in the gateway; the SDK methods are planned and wait for that change. Section Planned added, the question removed from Open questions |
 | 2026-10-08 | v0.7: `render_registration_form` implemented. Added to the spec: the exact input names of a posted `form_post` (the processor's names, not the gateway's camelCase), pass-through of the provider fields, the redirect page for the `iframe` wire type, the `auto_submit` behaviour, and the safety rules (http/https address with no whitespace or control characters, escaping, one constant script, nothing loaded from elsewhere). The `redirect-form` decision is marked implemented |
 | 2026-10-08 | v0.8: the README section and `examples/subscription_example.py` are written. The acceptance example moved out of this file into `examples/subscription_example.py` (one copy, checked by the documentation check, so it cannot drift from this spec unnoticed); the flow itself did not change except that the example turns every error of the SDK into an HTTP answer. The example was run end to end against the gateway emulator on Python 3.10 and 3.13 |
+| 2026-10-08 | v0.9: decided not to export the signature check as a public function (decision `no-standalone-verify`). The open question about `company_id` now records what was found: the dashboard shows it nowhere, and the key already identifies the company |
+| 2026-10-08 | v0.10: the open question about `company_id` now records the agreed direction: the dashboard shows it on the Company info page, at the right edge of the header strip next to PIB and MB, read-only and copyable, for every member of the company. Not built yet; the README stays as it is until it is |
+| 2026-10-08 | v0.11: the dashboard shows the company ID on the Company info page, so the open question is closed and moved to a new section, Notes from the dashboard. The README and the examples now say where to find the ID, and that Polako switches subscriptions on for a company (otherwise `ConflictError`) |

@@ -141,7 +141,10 @@ every charge.
 
 You need:
 
-- the **company ID** and the **API key** of your platform (the same API key that signs payments);
+- the **company ID**, shown on the Company info page of the dashboard, and the **API key** of your platform (the same API
+  key that signs payments);
+- subscriptions switched on for your company: Polako does that, and until it is done `create_subscription` raises a
+  `ConflictError`;
 - a **webhook URL** for your platform, set in the platform settings in the dashboard: charge notifications are sent there;
 - an **error URL**, which you give for every subscription: a failed card registration is reported there.
 

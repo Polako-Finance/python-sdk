@@ -64,8 +64,8 @@ curl -X POST "http://localhost:8000/subscribe?email=jane.smith@example.com"
 ```
 
 The gateway has to reach the two notification URLs, so set `SHOP_URL` in the file to an address it can open (for example a
-tunnel to your machine while you try this out), and put your company ID and the API key of your platform into
-`COMPANY_ID` and `API_KEY`.
+tunnel to your machine while you try this out), and put your company ID (shown on the Company info page of the dashboard) and the API key of your platform
+into `COMPANY_ID` and `API_KEY`.
 
 **Key features:**
 - Creating a subscription with an idempotency key you keep with your order
