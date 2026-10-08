@@ -41,7 +41,7 @@ poetry add polako-finance
 
 ```python
 import asyncio
-from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo
+from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo, CustomerAddress
 from decimal import Decimal
 from uuid import UUID
 
@@ -71,14 +71,21 @@ async def create_payment():
             first_name="John",
             last_name="Doe",
             email="john.doe@example.com",
-            phone="+381123456789"
+            phone="+381123456789",
+            address=CustomerAddress(
+                address="Knez Mihailova 5",
+                city="Belgrade",
+                state="Central Serbia",
+                zip="11000",
+                country="Serbia"
+            )
         )
         
         # Create payment session
         session = await client.create_order(
             order=order,
             customer=customer,
-            platform_id=UUID("your-platform-id"),
+            platform_id=UUID("00000000-0000-0000-0000-000000000000"),  # your platform ID
             secret_key="your-secret-key"
         )
         
@@ -97,15 +104,21 @@ if __name__ == "__main__":
 
 Handle payment callbacks from the gateway:
 
+Always pass `secret_key` in production: if it is omitted, the signature is **not** verified. A callback with a wrong
+signature raises `AssertionError`.
+
 ```python
 from polako.sdk import PolakoClient
 
 # Parse callback payload
-callback_payload = request.body  # From your webhook endpoint
-callback = PolakoClient.parse_payment_callback(
-    payload=callback_payload,
-    secret_key="your-secret-key"  # Optional, for signature verification
-)
+callback_payload = request.body  # Raw body from your webhook endpoint
+try:
+    callback = PolakoClient.parse_payment_callback(
+        payload=callback_payload,
+        secret_key="your-secret-key"  # Verifies the signature
+    )
+except AssertionError:
+    ...  # Signature mismatch: reject the request (e.g. respond with HTTP 400)
 
 if callback.success:
     print(f"Payment successful for order: {callback.order_id}")
@@ -296,6 +309,10 @@ Async client for Polako Finance API.
 #### Methods
 
 - `async create_order(order, customer, platform_id, secret_key)` - Create a new payment order
+- `async get_session_details(session_id)` - Get details of a payment session
+- `async get_payment_url(session_id, payment_option_id, customer, language_code, terms_accepted, address_shipping=None)` - Get a payment URL for an existing session
+- `async check_order_status(session_id, platform_id, secret_key)` - Check the status of a payment session
+- `async refund_session(session_id, platform_id, secret_key, reason, refund_items=None)` - Full or partial refund
 - `parse_payment_callback(payload, secret_key)` - Parse payment callback (static method)
 
 #### Context Manager
@@ -318,6 +335,9 @@ async with PolakoClient() as client:
 - `SessionInfo` - Payment session response
 - `PaymentCallback` - Parsed payment callback data
 - `MerchantInfo` - Merchant details from callbacks (name, PIB, address)
+- `PaymentSessionDetails`, `PaymentOption`, `PaymentUrlResult`, `InitCustomerInfo` - Session details and payment URL
+- `OrderStatusResponse`, `OrderStatusItem` - Result of `check_order_status`
+- `RefundItem`, `RefundResponse`, `RefundedItem` - Refunds
 
 ## Support
 

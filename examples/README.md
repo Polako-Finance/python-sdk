@@ -56,7 +56,7 @@ Before running the examples, update the following values:
 
 ```python
 # Replace these with your actual credentials
-PLATFORM_ID = UUID("your-platform-id-here")
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
 SECRET_KEY = "your-secret-key-here"
 ```
 
@@ -76,108 +76,147 @@ async with PolakoClient(test_env=False) as client:
 
 ## Integration with Web Frameworks
 
+Both examples verify the webhook signature. The webhook body is passed to the SDK exactly as received.
+
 ### FastAPI Example
 
 ```python
-from fastapi import FastAPI, Request
-from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi import FastAPI, HTTPException, Request
+from polako.sdk import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PolakoClient
+
 app = FastAPI()
 
-@app.post('/create-payment')
-async def create_payment(data: dict):
-    async with PolakoClient(test_env=True) as client:
-        order = OrderDetails(
-            currency="RSD",
-            language="en",
-            order_id=data['order_id'],
-            items=[OrderItem(**item) for item in data['items']],
-            total=Decimal(data['total'])
-        )
-        
-        customer = CustomerInfo(**data['customer'])
-        
-        session = await client.create_order(
-            order=order,
-            customer=customer,
-            platform_id=UUID(app.config['PLATFORM_ID']),
-            secret_key=app.config['SECRET_KEY']
-        )
-        
-        return {
-            'payment_url': session.paymentPageUrl,
-            'session_id': session.paymentSessionId
-        }
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
+SECRET_KEY = "your-secret-key"  # your secret key
 
-@app.post('/webhook')
+
+@app.post("/create-payment")
+async def create_payment(data: dict):
+    order = OrderDetails(
+        currency="RSD",
+        language="en",
+        order_id=data["order_id"],
+        items=[
+            OrderItem(
+                code=item["code"],
+                name=item["name"],
+                description=item["description"],
+                price=Decimal(item["price"]),
+                quantity=item["quantity"],
+                tax=item["tax"],
+            )
+            for item in data["items"]
+        ],
+        total=Decimal(data["total"]),
+    )
+    customer_data = data["customer"]
+    customer = CustomerInfo(
+        first_name=customer_data["first_name"],
+        last_name=customer_data["last_name"],
+        email=customer_data["email"],
+        phone=customer_data["phone"],
+        address=CustomerAddress(
+            address=customer_data["address"]["street"],
+            city=customer_data["address"]["city"],
+            state=customer_data["address"]["state"],
+            zip=customer_data["address"]["zip"],
+            country=customer_data["address"]["country"],
+        ),
+    )
+
+    async with PolakoClient(test_env=True) as client:
+        session = await client.create_order(order, customer, PLATFORM_ID, SECRET_KEY)
+
+    return {"payment_url": session.paymentPageUrl, "session_id": session.paymentSessionId}
+
+
+@app.post("/webhook")
 async def webhook(request: Request):
     body = await request.body()
-    callback = PolakoClient.parse_payment_callback(
-        payload=body.decode('utf-8'),
-        secret_key=app.config['SECRET_KEY']
-    )
-    
+    try:
+        callback = PolakoClient.parse_payment_callback(payload=body.decode("utf-8"), secret_key=SECRET_KEY)
+    except AssertionError:
+        raise HTTPException(status_code=400, detail="invalid signature")
+
     if callback.success:
-        # Process successful payment
-        pass
-    
-    return {'status': 'ok'}
+        pass  # Process successful payment
+
+    return {"status": "ok"}
 ```
 
 ### Quart Example (Async Flask)
 
 ```python
-from quart import Quart, request, jsonify
-from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo
 from decimal import Decimal
 from uuid import UUID
 
+from polako.sdk import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PolakoClient
+from quart import Quart, jsonify, request
+
 app = Quart(__name__)
 
-@app.route('/create-payment', methods=['POST'])
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
+SECRET_KEY = "your-secret-key"  # your secret key
+
+
+@app.route("/create-payment", methods=["POST"])
 async def create_payment():
-    data = await request.json
-    
-    async with PolakoClient(test_env=True) as client:
-        order = OrderDetails(
-            currency="RSD",
-            language="en",
-            order_id=data['order_id'],
-            items=[OrderItem(**item) for item in data['items']],
-            total=Decimal(data['total'])
-        )
-        
-        customer = CustomerInfo(**data['customer'])
-        
-        session = await client.create_order(
-            order=order,
-            customer=customer,
-            platform_id=UUID(app.config['PLATFORM_ID']),
-            secret_key=app.config['SECRET_KEY']
-        )
-        
-        return jsonify({
-            'payment_url': session.paymentPageUrl,
-            'session_id': session.paymentSessionId
-        })
+    data = await request.get_json()
 
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    body = await request.data
-    callback = PolakoClient.parse_payment_callback(
-        payload=body.decode('utf-8'),
-        secret_key=app.config['SECRET_KEY']
+    order = OrderDetails(
+        currency="RSD",
+        language="en",
+        order_id=data["order_id"],
+        items=[
+            OrderItem(
+                code=item["code"],
+                name=item["name"],
+                description=item["description"],
+                price=Decimal(item["price"]),
+                quantity=item["quantity"],
+                tax=item["tax"],
+            )
+            for item in data["items"]
+        ],
+        total=Decimal(data["total"]),
     )
-    
-    if callback.success:
-        # Process successful payment
-        pass
-    
-    return '', 200
-```
+    customer_data = data["customer"]
+    customer = CustomerInfo(
+        first_name=customer_data["first_name"],
+        last_name=customer_data["last_name"],
+        email=customer_data["email"],
+        phone=customer_data["phone"],
+        address=CustomerAddress(
+            address=customer_data["address"]["street"],
+            city=customer_data["address"]["city"],
+            state=customer_data["address"]["state"],
+            zip=customer_data["address"]["zip"],
+            country=customer_data["address"]["country"],
+        ),
+    )
 
+    async with PolakoClient(test_env=True) as client:
+        session = await client.create_order(order, customer, PLATFORM_ID, SECRET_KEY)
+
+    return jsonify({"payment_url": session.paymentPageUrl, "session_id": session.paymentSessionId})
+
+
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    body = await request.get_data()
+    try:
+        callback = PolakoClient.parse_payment_callback(payload=body.decode("utf-8"), secret_key=SECRET_KEY)
+    except AssertionError:
+        return "invalid signature", 400
+
+    if callback.success:
+        pass  # Process successful payment
+
+    return "", 200
+```
 ## Best Practices
 
 1. **Always use signature verification** in production for webhooks

@@ -4,7 +4,7 @@ import asyncio
 from decimal import Decimal
 from uuid import UUID
 
-from polako.sdk import PolakoClient, CustomerInfo, OrderDetails, OrderItem
+from polako.sdk import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PolakoClient
 
 
 async def create_payment_session():
@@ -16,7 +16,7 @@ async def create_payment_session():
             OrderItem(
                 code="PROD-001",
                 name="Digital Service",
-                description="Monthly subscription",
+                description="One-time digital service",
                 price=Decimal("50.00"),
                 quantity=1,
                 tax="VAT",
@@ -38,7 +38,13 @@ async def create_payment_session():
             last_name="Smith",
             email="jane.smith@example.com",
             phone="+381987654321",
-            address=None,
+            address=CustomerAddress(
+                address="Knez Mihailova 5",
+                city="Belgrade",
+                state="Central Serbia",
+                zip="11000",
+                country="Serbia",
+            ),
         )
 
         # Your platform credentials (replace with actual values)
