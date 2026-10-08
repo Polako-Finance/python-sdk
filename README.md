@@ -267,28 +267,55 @@ poetry shell
 # Run all tests
 poetry run pytest
 
-# Run with coverage
-poetry run pytest --cov=polako
+# Run with coverage of the SDK package
+poetry run pytest --cov=polako.sdk --cov-report=term
 
-# Run specific test file
+# Run a specific test file
 poetry run pytest tests/test_client.py
 ```
+
+The tests run against an in-process fake gateway and never use the network.
+
+> The `Makefile` offers shortcuts for the commands in this section (`make test`, `make test-cov`, `make lint`,
+> `make format`, `make type-check`, `make check`, `make check-docs`, `make docs-update`). They need GNU make
+> (Linux, macOS, WSL); on Windows run the `poetry run ...` commands shown here.
 
 ### Code Quality
 
 ```bash
 # Format code with black
-poetry run black src/
+poetry run black src/ tests/
 
 # Sort imports with isort
-poetry run isort src/
+poetry run isort src/ tests/
+
+# Linting with flake8
+poetry run flake8 src/ tests/
 
 # Type checking with mypy
 poetry run mypy src/
-
-# Linting with flake8
-poetry run flake8 src/
 ```
+
+### Checking the Documentation
+
+The Python code blocks in `README.md`, `README.pypi.md` and `examples/README.md` are checked against the SDK, so the
+documentation cannot silently drift from the code. The check does not run the code: it verifies the syntax, the names
+imported from `polako.sdk`, and that every call to an SDK class or client method matches its real signature.
+
+```bash
+# Run the check (also runs in CI as the `docs` job)
+poetry run python scripts/check_docs.py
+```
+
+Every code block is pinned by a hash in `scripts/docs_manifest.json`. If you edit, add or remove a code block, the
+check fails and names the block (`NEW BLOCK`, `CHANGED BLOCK` or `REMOVED BLOCK`). Review the change, then accept it:
+
+```bash
+poetry run python scripts/check_docs.py --update
+```
+
+The documentation is the source of truth: the check follows it, not the other way round. Write examples the way a
+merchant would use the SDK; if the check disagrees, fix the SDK or `scripts/check_docs.py`, not the example.
 
 ### Pre-commit Hooks
 

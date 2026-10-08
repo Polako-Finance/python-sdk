@@ -96,6 +96,12 @@ release-major: ## Bump major version and create GitHub release (0.1.0 -> 1.0.0)
 	@poetry version major
 	@bash scripts/create_release.sh
 
+check-docs: ## Check that code blocks in README/examples match the SDK
+	poetry run python scripts/check_docs.py
+
+docs-update: ## Accept reviewed documentation changes (updates scripts/docs_manifest.json)
+	poetry run python scripts/check_docs.py --update
+
 check: lint test ## Run all checks (lint + test)
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 

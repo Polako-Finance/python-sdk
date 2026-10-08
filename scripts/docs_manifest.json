@@ -1,0 +1,74 @@
+{
+  "README.md::Quick Start::0": {
+    "hash": "96951d2ae0a12539",
+    "check": "static"
+  },
+  "README.md::Payment Callback Handling::0": {
+    "hash": "8ef5772669b40a67",
+    "check": "static"
+  },
+  "README.md::Client Options::0": {
+    "hash": "fbb83db6ab5d3787",
+    "check": "static"
+  },
+  "README.md::Error Handling::0": {
+    "hash": "91ed3be70da35388",
+    "check": "static"
+  },
+  "README.md::Custom Customer Address::0": {
+    "hash": "ad9b38c08965abbf",
+    "check": "static"
+  },
+  "README.md::Multiple Items in Order::0": {
+    "hash": "53b0df8b77aba46c",
+    "check": "static"
+  },
+  "README.md::Context Manager::0": {
+    "hash": "a9563a148580d50c",
+    "check": "static"
+  },
+  "README.pypi.md::Quick Start::0": {
+    "hash": "96951d2ae0a12539",
+    "check": "static"
+  },
+  "README.pypi.md::Payment Callback Handling::0": {
+    "hash": "049784a1c6693b63",
+    "check": "static"
+  },
+  "README.pypi.md::Client Options::0": {
+    "hash": "fbb83db6ab5d3787",
+    "check": "static"
+  },
+  "README.pypi.md::Error Handling::0": {
+    "hash": "91ed3be70da35388",
+    "check": "static"
+  },
+  "README.pypi.md::Custom Customer Address::0": {
+    "hash": "ad9b38c08965abbf",
+    "check": "static"
+  },
+  "README.pypi.md::Multiple Items in Order::0": {
+    "hash": "38981e1ed6e7fc1f",
+    "check": "static"
+  },
+  "README.pypi.md::Context Manager::0": {
+    "hash": "a9563a148580d50c",
+    "check": "static"
+  },
+  "examples/README.md::Configuration::0": {
+    "hash": "27b3f0f1b213252b",
+    "check": "static"
+  },
+  "examples/README.md::Testing::0": {
+    "hash": "535bd20f83eaa13c",
+    "check": "static"
+  },
+  "examples/README.md::FastAPI Example::0": {
+    "hash": "26150f0c981d682f",
+    "check": "static"
+  },
+  "examples/README.md::Quart Example (Async Flask)::0": {
+    "hash": "401480264b928b9f",
+    "check": "static"
+  }
+}
