@@ -32,7 +32,7 @@ test: ## Run tests
 
 test-cov: ## Run tests with coverage
 	@echo "$(BLUE)Running tests with coverage...$(NC)"
-	poetry run pytest tests/ -v --cov=polako_common --cov-report=html --cov-report=term
+	poetry run pytest tests/ -v --cov=polako.sdk --cov-report=html --cov-report=term
 	@echo "$(GREEN)✓ Coverage report generated in htmlcov/$(NC)"
 
 test-watch: ## Run tests in watch mode

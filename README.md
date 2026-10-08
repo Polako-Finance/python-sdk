@@ -341,7 +341,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
-See [documentation/STATUS.md](documentation/STATUS.md) for the release history.
+See [CHANGELOG.md](CHANGELOG.md) for the release history.
 
 ---
 
