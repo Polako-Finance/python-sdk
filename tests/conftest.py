@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from polako.sdk import PolakoClient
+from tests.factories import Credentials, PlatformCredentials, make_credentials, make_platform_credentials
 
 Handler = Callable[[httpx.Request], httpx.Response]
 Step = Union[Dict[str, Any], Exception]
@@ -96,3 +97,21 @@ def sleeps(monkeypatch: pytest.MonkeyPatch) -> List[float]:
 @pytest.fixture
 def client() -> PolakoClient:
     return PolakoClient(test_env=True)
+
+
+@pytest.fixture
+def platform() -> PlatformCredentials:
+    """Fresh platform ID and secret key for signed payment calls."""
+    return make_platform_credentials()
+
+
+@pytest.fixture
+def credentials() -> Credentials:
+    """Fresh company ID and API key for every test."""
+    return make_credentials()
+
+
+@pytest.fixture
+def subscription_client(credentials: Credentials) -> PolakoClient:
+    """A client configured the way a merchant configures it for subscriptions."""
+    return PolakoClient(test_env=True, company_id=credentials.company_id, api_key=credentials.api_key)

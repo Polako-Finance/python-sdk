@@ -127,12 +127,12 @@ class AsyncHttpClient:
         try:
             return response_model.from_json(response_text)
         except json.JSONDecodeError as e:
-            raise HttpRequestError(f"Failed to parse JSON response: {e}", response_body=response_text)
+            raise HttpRequestError(f"Failed to parse JSON response: {e}", response_body=response_text) from e
         except Exception as e:
             raise HttpRequestError(
                 f"Failed to deserialize response to {response_model.__name__}: {e}",
                 response_body=response_text,
-            )
+            ) from e
 
     def _handle_response(
         self,

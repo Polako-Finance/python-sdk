@@ -2,9 +2,11 @@
 
 from decimal import Decimal
 from typing import List, Optional, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from polako.sdk._async_client import AsyncHttpClient
+from polako.sdk._constants import BillingInterval
+from polako.sdk._exceptions import ConfigurationError
 from polako.sdk._order import (
     CheckStatusRequest,
     CreateOrderRequest,
@@ -24,6 +26,7 @@ from polako.sdk._order import (
     SessionInfo,
     SignedPaymentCallbackRaw,
 )
+from polako.sdk._subscription import SubscribeRequest, SubscribeResponse, SubscriptionCreated
 
 T = TypeVar("T")
 
@@ -44,6 +47,8 @@ class AsyncPolakoClient:
         self,
         timeout: float = 30.0,
         test_env: bool = False,
+        company_id: Optional[UUID] = None,
+        api_key: Optional[str] = None,
     ):
         """
         Initialize the async Polako Finance client.
@@ -51,6 +56,9 @@ class AsyncPolakoClient:
         Args:
             timeout: Request timeout in seconds (default: 30.0)
             test_env: If True, use test environment URL; otherwise use production (default: False)
+            company_id: Your company ID. Needed for subscriptions (it is part of the request URL)
+            api_key: The API key of your platform, the same value as the ``secret_key`` of the signed
+                payment methods. Needed for subscriptions; it is sent only with subscription calls
         """
         from polako.sdk._constants import BASE_URL_PROD, BASE_URL_TEST
 
@@ -58,6 +66,13 @@ class AsyncPolakoClient:
             base_url=BASE_URL_TEST if test_env else BASE_URL_PROD,
             timeout=timeout,
         )
+        self._company_id = company_id
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        """Show the company ID but never the API key."""
+        key = "'***'" if self._api_key else None
+        return f"{type(self).__name__}(company_id={self._company_id!r}, api_key={key})"
 
     async def __aenter__(self) -> "AsyncPolakoClient":
         """Enter async context manager."""
@@ -293,6 +308,96 @@ class AsyncPolakoClient:
             f"/v1/session/{session_id}/status/signed",
             request_body=request,
             response_model=OrderStatusResponse,
+        )
+
+    async def create_subscription(
+        self,
+        *,
+        customer_email: str,
+        amount: Decimal,
+        currency: str,
+        billing_interval: BillingInterval,
+        merchant_subscription_ref: str,
+        success_url: str,
+        cancel_url: str,
+        error_url: str,
+        idempotency_key: Optional[str] = None,
+    ) -> SubscriptionCreated:
+        """
+        Create a subscription and get the form that sends the customer through the card registration (3DS).
+
+        The client must be created with ``company_id`` and ``api_key``. The subscription becomes active only
+        after the customer completes the registration; you learn about the result from the webhooks.
+
+        Pass your own ``idempotency_key`` (a UUID is recommended) and store it before the call: sending the same
+        request again with the same key returns the same subscription instead of creating a second one. Without
+        it a key is generated and returned in the result. A failed attempt (network error, HTTP 429 or 5xx) is
+        retried up to 3 times with the same key. The endpoint accepts 20 requests per 60 seconds.
+
+        Args:
+            customer_email: Email of the customer
+            amount: Amount charged every billing interval, greater than zero
+            currency: Currency code, e.g. ``"RSD"``
+            billing_interval: How often the customer is charged; a ``BillingInterval`` or its string value
+            merchant_subscription_ref: Your own reference of the plan or product (1 to 128 characters). A customer
+                can have only one live subscription per reference
+            success_url: Where the customer returns after a successful registration
+            cancel_url: Where the customer returns after cancelling
+            error_url: URL that receives a POST when the registration fails
+            idempotency_key: Optional key that makes the call safe to repeat
+
+        Returns:
+            SubscriptionCreated with the subscription ID, the registration form and the idempotency key used
+
+        Raises:
+            ConfigurationError: If the client has no ``company_id`` or ``api_key``
+            ValueError: If an argument is invalid
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key belongs to another company (HTTP 403)
+            ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
+            RequestValidationError: If the server rejects a field, e.g. a currency that is not allowed (HTTP 422)
+            RateLimitedError: If the rate limit is hit and the wait is too long to retry (HTTP 429)
+            ServerError: If the gateway or the card processor fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        if self._company_id is None:
+            raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
+        if not self._api_key:
+            raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+
+        try:
+            interval = BillingInterval(billing_interval)
+        except ValueError:
+            allowed = ", ".join(i.value for i in BillingInterval)
+            raise ValueError(f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}") from None
+
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise ValueError("'idempotency_key' must not be empty")
+
+        request = SubscribeRequest(
+            customer_email=customer_email,
+            amount=amount,
+            currency=currency,
+            billing_interval=interval,
+            merchant_subscription_ref=merchant_subscription_ref,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            error_url=error_url,
+        )
+        request.validate()
+        request.amount = Decimal(format(request.amount, "f"))  # plain digits, never an exponent
+
+        key = idempotency_key or str(uuid4())
+        response = await self._http_client.post(
+            f"/v1/company/{self._company_id}/subscriptions",
+            request_body=request,
+            response_model=SubscribeResponse,
+            headers={"company_api_key": self._api_key, "Idempotency-Key": key},
+        )
+        return SubscriptionCreated(
+            subscription_id=response.subscription_id,
+            registration_form=response.registration_form,
+            idempotency_key=key,
         )
 
     @staticmethod

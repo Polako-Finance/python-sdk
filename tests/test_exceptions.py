@@ -1,4 +1,4 @@
-"""P1/A1: a separate exception class per HTTP status, all still HttpRequestError."""
+"""A separate exception class per HTTP status, all still HttpRequestError."""
 
 import pytest
 
@@ -13,6 +13,7 @@ from polako.sdk import (
     UnauthorizedError,
 )
 from polako.sdk._async_client import AsyncHttpClient
+from tests.generators import generate_api_key, generate_random_host, generate_readable_string
 
 SPECIFIC = [
     (401, UnauthorizedError),
@@ -28,19 +29,21 @@ SPECIFIC = [
 
 async def fetch(gateway, status, **response):
     gateway.respond(status=status, **response)
-    async with AsyncHttpClient("https://gateway.test") as http:
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
         await http.get("/v1/anything")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status, expected", SPECIFIC)
 async def test_status_maps_to_its_own_class(gateway, status, expected):
+    body = f'{{"detail": "{generate_readable_string(12)}"}}'
+
     with pytest.raises(expected) as exc:
-        await fetch(gateway, status, text='{"detail": "x"}')
+        await fetch(gateway, status, text=body)
 
     assert type(exc.value) is expected
     assert exc.value.status_code == status
-    assert exc.value.response_body == '{"detail": "x"}'
+    assert exc.value.response_body == body
 
 
 @pytest.mark.asyncio
@@ -85,12 +88,13 @@ async def test_rate_limited_error_carries_retry_after(gateway, header, expected)
 
 @pytest.mark.asyncio
 async def test_api_key_never_appears_in_the_exception(gateway):
+    api_key = generate_api_key()
     gateway.respond(status=401, text='{"detail": "Client platform not found for the provided API key."}')
 
-    async with AsyncHttpClient("https://gateway.test") as http:
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
         with pytest.raises(UnauthorizedError) as exc:
-            await http.get("/v1/anything", headers={"company_api_key": "sekret-key-123"})
+            await http.get("/v1/anything", headers={"company_api_key": api_key})
 
     error = exc.value
     for text in (str(error), repr(error), error.message, error.response_body or ""):
-        assert "sekret-key-123" not in text
+        assert api_key not in text

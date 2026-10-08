@@ -3,6 +3,10 @@
 from typing import Dict, Optional, Type
 
 
+class ConfigurationError(ValueError):
+    """The client is not configured for the requested call (e.g. no company ID or API key for a subscription)."""
+
+
 class HttpClientError(Exception):
     """Base exception for HTTP client errors."""
 

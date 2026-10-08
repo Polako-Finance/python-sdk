@@ -1,4 +1,4 @@
-"""P1/A3: wire aliases and a decoder hook in Serializable, without changing existing behaviour."""
+"""Wire aliases and a decoder hook in Serializable, without changing existing behaviour."""
 
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -7,6 +7,8 @@ from typing import ClassVar, List, Optional
 import pytest
 
 from polako.sdk._serializable import Serializable
+from tests.factories import make_order_item
+from tests.generators import generate_random_decimal, generate_readable_string
 
 
 @dataclass
@@ -48,78 +50,101 @@ class Drawing(Serializable):
     shape: object = field(metadata={"alias": "theShape", "decode": decode_shape})
 
 
-def test_from_dict_reads_alias_keys():
-    order = Order.from_dict({"orderId": "A1", "totalAmount": "10.50"})
-
-    assert order.order_id == "A1"
-    assert order.amount == "10.50"
+@pytest.fixture
+def order_id() -> str:
+    return generate_readable_string(12)
 
 
-def test_from_dict_still_accepts_field_names():
-    assert Order.from_dict({"order_id": "A1", "amount": "1"}).order_id == "A1"
+@pytest.fixture
+def amount() -> Decimal:
+    return generate_random_decimal(3, 2)
 
 
-def test_alias_wins_when_both_keys_are_present():
-    assert Order.from_dict({"orderId": "alias", "order_id": "name", "totalAmount": "1"}).order_id == "alias"
+@pytest.fixture
+def card() -> Card:
+    return Card(brand=generate_readable_string(8), last4=generate_readable_string(4))
 
 
-def test_nested_dataclass_is_decoded_through_its_alias():
-    order = Order.from_dict({"orderId": "A1", "totalAmount": "1", "savedCard": {"cardBrand": "visa", "lastFour": "4242"}})
+def test_from_dict_reads_alias_keys(order_id, amount):
+    order = Order.from_dict({"orderId": order_id, "totalAmount": str(amount)})
 
-    assert order.card == Card(brand="visa", last4="4242")
-
-
-def test_fields_without_an_alias_are_unchanged():
-    assert Order.from_dict({"orderId": "A1", "totalAmount": "1", "plain": "x"}).plain == "x"
+    assert order.order_id == order_id
+    assert order.amount == str(amount)
 
 
-def test_to_dict_uses_field_names_by_default():
-    assert Order("A1", Decimal("1")).to_dict() == {
-        "order_id": "A1",
-        "amount": Decimal("1"),
+def test_from_dict_still_accepts_field_names(order_id, amount):
+    assert Order.from_dict({"order_id": order_id, "amount": str(amount)}).order_id == order_id
+
+
+def test_alias_wins_when_both_keys_are_present(amount):
+    by_alias, by_name = generate_readable_string(12), generate_readable_string(12)
+
+    assert Order.from_dict({"orderId": by_alias, "order_id": by_name, "totalAmount": str(amount)}).order_id == by_alias
+
+
+def test_nested_dataclass_is_decoded_through_its_alias(order_id, amount, card):
+    order = Order.from_dict(
+        {"orderId": order_id, "totalAmount": str(amount), "savedCard": {"cardBrand": card.brand, "lastFour": card.last4}}
+    )
+
+    assert order.card == card
+
+
+def test_fields_without_an_alias_are_unchanged(order_id, amount):
+    plain = generate_readable_string(8)
+
+    assert Order.from_dict({"orderId": order_id, "totalAmount": str(amount), "plain": plain}).plain == plain
+
+
+def test_to_dict_uses_field_names_by_default(order_id, amount):
+    assert Order(order_id, amount).to_dict() == {
+        "order_id": order_id,
+        "amount": amount,
         "card": None,
         "tags": [],
         "plain": None,
     }
 
 
-def test_to_dict_by_alias_uses_wire_names_including_nested():
-    order = Order("A1", Decimal("1"), Card("visa", "4242"))
+def test_to_dict_by_alias_uses_wire_names_including_nested(order_id, amount, card):
+    order = Order(order_id, amount, card)
 
     assert order.to_dict(by_alias=True) == {
-        "orderId": "A1",
-        "totalAmount": Decimal("1"),
-        "savedCard": {"cardBrand": "visa", "lastFour": "4242"},
+        "orderId": order_id,
+        "totalAmount": amount,
+        "savedCard": {"cardBrand": card.brand, "lastFour": card.last4},
         "tags": [],
         "plain": None,
     }
 
 
-def test_class_can_serialize_by_alias_by_default():
-    order = WireOrder("A1", Decimal("10.50"))
+def test_class_can_serialize_by_alias_by_default(order_id, amount):
+    order = WireOrder(order_id, amount)
 
-    assert order.to_dict() == {"orderId": "A1", "totalAmount": Decimal("10.50")}
-    assert order.to_json() == '{"orderId": "A1", "totalAmount": "10.50"}'
-    assert order.to_dict(by_alias=False) == {"order_id": "A1", "amount": Decimal("10.50")}
+    assert order.to_dict() == {"orderId": order_id, "totalAmount": amount}
+    assert order.to_json() == f'{{"orderId": "{order_id}", "totalAmount": "{amount}"}}'
+    assert order.to_dict(by_alias=False) == {"order_id": order_id, "amount": amount}
 
 
-def test_by_alias_roundtrips_through_json():
-    order = Order("A1", Decimal("1"), Card("visa", "4242"))
+def test_by_alias_roundtrips_through_json(order_id, amount, card):
+    order = Order(order_id, amount, card)
 
     restored = Order.from_json(order.to_json(by_alias=True))
 
-    assert restored.order_id == "A1" and restored.card == Card("visa", "4242")
+    assert restored.order_id == order_id and restored.card == card
 
 
 def test_decoder_hook_receives_the_raw_value():
-    drawing = Drawing.from_dict({"theShape": {"type": "circle", "r": 1}})
+    raw = {"type": "circle", generate_readable_string(3): generate_readable_string(3)}
 
-    assert drawing.shape == ("circle", {"type": "circle", "r": 1})
+    assert Drawing.from_dict({"theShape": raw}).shape == ("circle", raw)
 
 
 def test_decoder_hook_error_is_not_swallowed():
-    with pytest.raises(UnknownKind, match="unknown shape type 'hexagon'"):
-        Drawing.from_dict({"theShape": {"type": "hexagon"}})
+    unknown = generate_readable_string(8)
+
+    with pytest.raises(UnknownKind, match=f"unknown shape type '{unknown}'"):
+        Drawing.from_dict({"theShape": {"type": unknown}})
 
 
 def test_decoder_is_skipped_for_a_missing_value():
@@ -127,9 +152,14 @@ def test_decoder_is_skipped_for_a_missing_value():
 
 
 def test_classes_without_metadata_behave_as_before():
-    from polako.sdk import OrderItem
+    item = make_order_item()
 
-    item = OrderItem(code="C", name="N", description=None, price=Decimal("1"), quantity=1, tax=None)
-
-    assert item.to_dict() == {"code": "C", "name": "N", "description": None, "price": Decimal("1"), "quantity": 1, "tax": None}
-    assert OrderItem.from_dict(item.to_dict()) == item
+    assert item.to_dict() == {
+        "code": item.code,
+        "name": item.name,
+        "description": item.description,
+        "price": item.price,
+        "quantity": item.quantity,
+        "tax": item.tax,
+    }
+    assert type(item).from_dict(item.to_dict()) == item

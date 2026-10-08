@@ -1,26 +1,29 @@
-"""Smoke: model validation and (de)serialization."""
+"""Model validation and (de)serialization."""
 
+import json
 from decimal import Decimal
 
 import pytest
 
-from polako.sdk import CustomerAddress, InitCustomerInfo, OrderDetails, OrderItem, PaymentSessionDetails, SessionInfo
-
-
-def make_item(**overrides):
-    fields = dict(code="SKU-1", name="Ticket", description=None, price=Decimal("100.00"), quantity=2, tax="VAT")
-    fields.update(overrides)
-    return OrderItem(**fields)
-
-
-def make_order(**overrides):
-    fields = dict(currency="RSD", language="en", order_id="ORDER-1", items=[make_item()], total=Decimal("200.00"))
-    fields.update(overrides)
-    return OrderDetails(**fields)
+from polako.sdk import CustomerAddress, PaymentSessionDetails, SessionInfo
+from tests.factories import (
+    make_customer_address,
+    make_init_customer_info,
+    make_order_details,
+    make_order_item,
+    make_session_details_response,
+    make_session_info_response,
+)
 
 
 def test_valid_order_passes():
-    make_order().validate()
+    make_order_details().validate()
+
+
+def test_order_total_defaults_to_the_sum_of_the_items():
+    order = make_order_details()
+
+    assert order.total == sum((item.price * item.quantity for item in order.items), Decimal("0"))
 
 
 @pytest.mark.parametrize(
@@ -33,8 +36,12 @@ def test_valid_order_passes():
     ],
 )
 def test_invalid_order_rejected(overrides, message):
+    order = make_order_details()
+    for name, value in overrides.items():
+        setattr(order, name, value)
+
     with pytest.raises(ValueError, match=message):
-        make_order(**overrides).validate()
+        order.validate()
 
 
 @pytest.mark.parametrize(
@@ -48,15 +55,25 @@ def test_invalid_order_rejected(overrides, message):
 )
 def test_invalid_item_rejected(overrides, message):
     with pytest.raises(ValueError, match=message):
-        make_item(**overrides).validate()
+        make_order_item(**overrides).validate()
+
+
+def test_invalid_item_inside_an_order_is_rejected():
+    order = make_order_details(items=[make_order_item(), make_order_item(quantity=0)])
+
+    with pytest.raises(ValueError, match="quantity"):
+        order.validate()
 
 
 def test_order_to_json_stringifies_decimal():
-    assert '"total": "200.00"' in make_order().to_json()
+    order = make_order_details()
+
+    assert json.loads(order.to_json())["total"] == str(order.total)
 
 
 def test_nested_roundtrip():
-    address = CustomerAddress(address="Main 1", city="Belgrade", state=None, zip="11000", country="RS")
+    address = make_customer_address()
+
     assert CustomerAddress.from_dict(address.to_dict()) == address
 
 
@@ -65,55 +82,31 @@ def test_nested_roundtrip():
     [({"first_name": ""}, "first_name"), ({"last_name": ""}, "last_name"), ({"email": ""}, "email"), ({"type": "x"}, "type")],
 )
 def test_init_customer_validation(overrides, message):
-    fields = dict(first_name="A", last_name="B", email="a@b.c", phone=None, address=None, type="person", cgid=None)
-    fields.update(overrides)
     with pytest.raises(ValueError, match=message):
-        InitCustomerInfo(**fields).validate()
+        make_init_customer_info(**overrides).validate()
+
+
+def test_valid_init_customer_passes():
+    make_init_customer_info().validate()
 
 
 def test_session_info_from_json():
-    info = SessionInfo.from_json(
-        '{"paymentSessionId": "s1", "paymentPageUrl": "https://pay", "expiresAt": "2026-01-01T00:00:00"}'
-    )
-    assert info.paymentSessionId == "s1"
+    response = make_session_info_response()
+
+    info = SessionInfo.from_json(json.dumps(response))
+
+    assert info.paymentSessionId == response["paymentSessionId"]
+    assert info.paymentPageUrl == response["paymentPageUrl"]
+    assert info.expiresAt == response["expiresAt"]
 
 
 def test_session_details_nested_parse():
-    details = PaymentSessionDetails.from_dict(
-        {
-            "session_id": "s1",
-            "language_code": "en",
-            "supported_languages": ["en"],
-            "payment_config": None,
-            "customer": {
-                "first_name": "A",
-                "last_name": "B",
-                "email": None,
-                "phone": None,
-                "address": None,
-                "type": None,
-                "cgid": None,
-            },
-            "shopping_cart": {
-                "items": [
-                    {
-                        "id": "i1",
-                        "name": "Ticket",
-                        "description": None,
-                        "price": 100.0,
-                        "tax": 20.0,
-                        "tax_schema": "VAT",
-                        "quantity": 1,
-                        "client_item_id": None,
-                        "refunded_quantity": 0,
-                    }
-                ],
-                "currency": "RSD",
-                "total_price": 100.0,
-            },
-            "payment_options": [{"id": "p1", "name": "Card"}],
-            "terms_url": "https://terms",
-        }
-    )
-    assert details.shopping_cart.items[0].name == "Ticket"
-    assert details.payment_options[0].id == "p1"
+    response = make_session_details_response()
+
+    details = PaymentSessionDetails.from_dict(response)
+
+    assert details.shopping_cart.items[0].name == response["shopping_cart"]["items"][0]["name"]
+    assert details.payment_options[0].id == response["payment_options"][0]["id"]
+    assert details.customer.address == CustomerAddress.from_dict(response["customer"]["address"])
+    assert details.payment_config is not None
+    assert details.payment_config.fields_require == response["payment_config"]["fields_require"]

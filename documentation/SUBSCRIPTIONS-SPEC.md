@@ -1,8 +1,9 @@
-# python-sdk — Subscriptions: client-facing specification (FIN-665)
+# python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.2** — agreed in principle on 2026-10-08, not implemented yet. Scope: **creating a subscription, full cycle**
-(create, render the 3DS form, receive webhooks). Subscription management is out of scope until the team answers the open
-question below.
+**Status: DRAFT v0.3** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+gate, wire aliases, the models and `create_subscription`. Not yet: webhook parsers, form rendering helper, README and example. Scope: **creating a subscription, full cycle**
+(create, render the 3DS form, receive webhooks). Subscription management is out of scope until it is decided whether merchants
+should manage subscriptions from their own code (see Open questions).
 
 ## How to use this document
 
@@ -24,10 +25,7 @@ notification), exceptions by HTTP status, retries for keyed requests.
 Out (open): management methods (detail, list, pause, resume, cancel, payments), retries for payment methods,
 unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production.
 
-## Server contract (verified in the backend, 2026-10-08)
-
-Source: `backend/application/model/subscription/subscribe.py`, `api/router/subscriptions.py`,
-`service/subscription/webhook.py`, `service/subscription/registration.py`.
+## Gateway contract (verified 2026-10-08)
 
 - `POST /v1/company/{company_id}/subscriptions`, status 201. Headers: `company_api_key` (the API key of the platform, the
   same value that signs payment requests) and a mandatory `Idempotency-Key`. A repeat with the same key returns the
@@ -38,14 +36,14 @@ Source: `backend/application/model/subscription/subscribe.py`, `api/router/subsc
 - Response: `subscriptionId` and `registrationForm`, a union discriminated by `type`:
   `form_post` (`action`, `version`, `merchantId`, `terminalId`, `totalAmount`, `currency`, `locale`, `purchaseTime`,
   `orderId`, `signature`), `hpp_form_post` (`action`, `fields`: dict of strings), `iframe` (`action`).
-  Despite its name, `iframe` is what the AllSecure provider returns: its `redirectUrl` only
-  (`service/payment_adapter.py`, `_build_allsecure_registration_form`). It is a redirect target, not an embeddable page.
+  Despite its name, `iframe` carries only a redirect address (that is all a hosted-payment provider returns): it is a
+  redirect target, not an embeddable page.
 - Errors: 401 (missing or unknown key), 403 (key belongs to another company), 409 (subscriptions disabled for the company,
   or the customer already has a live subscription for the same `merchantSubscriptionRef`), 422 (invalid fields or key, and
-  a currency outside the platform-wide allow-list that ops configure, `CurrencyNotAllowedError`), 502 (the provider
+  a currency outside the platform-wide allow-list the platform operator configures), 502 (the provider
   rejected the card registration request).
-- Lifecycle webhooks go to `credentials["callback_url"]` of the platform (set in the dashboard site wizard, field
-  `callback_url`: optional for generic platforms, required for one platform type): signed with HMAC-SHA256 over the raw compact
+- Lifecycle webhooks go to `credentials["callback_url"]` of the platform (set in the platform settings in the
+  dashboard, field `callback_url`: optional for generic platforms, required for one platform type): signed with HMAC-SHA256 over the raw compact
   JSON body with sorted keys, hex digest in `X-Signature`, key = the platform API key. Three attempts (1 s, 2 s back-off)
   on 5xx or network errors, 4xx is final.
   - `charge_succeeded`: `event`, `subscription_id`, `merchant_subscription_ref`, `amount` (string), `currency`, `charged_at` (ISO)
@@ -129,7 +127,7 @@ async def subscription_error(request: Request):
 | Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str, api_key: str)` returns `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed` with `signature_verified` |
-| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `WebhookSignatureError`, `MissingSignatureError` |
+| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` |
 
 Behaviour rules:
 - `create_subscription` without `company_id` or `api_key` raises a clear configuration error before any request.
@@ -137,35 +135,41 @@ Behaviour rules:
 - The API key never appears in logs, `repr` or exception text.
 - Webhook signatures are verified over the raw body exactly as received, with `hmac.compare_digest`; a forged signature raises
   `WebhookSignatureError` (never `AssertionError`).
+- Arguments are checked before any request and raise `ValueError`: `customer_email` contains `@` and no spaces; `amount` is a
+  finite `Decimal` greater than zero (floats are rejected); `currency` is not empty; `billing_interval` is a
+  `BillingInterval` or its string value; `merchant_subscription_ref` is 1 to 128 characters; the three URLs are http or
+  https with a host; a given `idempotency_key` is not blank. Everything else is left to the server.
+- `amount` is sent as a plain decimal string (`990.00`, `1000` for `Decimal("1E+3")`), never with an exponent.
+- `SubscriptionCreated` is immutable. The client keeps the API key private and hides it in `repr`.
 - Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
   key on every attempt. 4xx other than 429 is never retried. Payment methods are not retried.
 
 ## Decisions
 
-| # | Decision | State |
-|---|----------|-------|
-| S1 | `create_subscription` returns a result object carrying the used idempotency key; the caller may pass their own key (recommended) | assumed |
-| S2 | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key` | assumed |
-| S3 | A registration failure without a signature is rejected unless `allow_unsigned=True` | assumed |
-| S4 | `currency` is a plain string validated by the server (SDK constants know only RSD, the backend knows RSD, RUB, EUR, USD and applies a platform-wide ops allow-list that answers 422) | assumed |
-| S5 | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | assumed |
-| S6 | 502 is retried like any 5xx, keyed requests only, bounded | assumed |
-| S7 | The wire type `iframe` is a redirect target (AllSecure `redirectUrl`), so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: the backend gives no sign it is embeddable, and hosted payment pages commonly refuse framing | assumed (changed in v0.2) |
+| Name | Decision | State |
+|------|----------|-------|
+| result-with-key | `create_subscription` returns a result object carrying the used idempotency key; the caller may pass their own key (recommended) | assumed |
+| client-config | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key` | assumed |
+| unsigned-registration | A registration failure without a signature is rejected unless `allow_unsigned=True` | assumed |
+| currency-checked-by-server | `currency` is a plain string validated by the server (SDK constants know only RSD, the gateway knows RSD, RUB, EUR, USD and applies a platform-wide allow-list that answers 422) | assumed |
+| unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | assumed |
+| retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | assumed |
+| redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | assumed |
 
 "Assumed" means: agreed as the working choice on 2026-10-08, to be confirmed or changed; change it here first.
 
 ## Open questions
 
-- Should a merchant manage subscriptions from their own code (pause, resume, cancel, read)? Today these endpoints need a
-  console JWT and the router describes them as dashboard operations. Options: console only (nothing in the SDK), SDK methods
-  taking a ready JWT, or the backend opens them for the platform API key. Decided with the team.
-- Where does a merchant see their `company_id` (it is part of the create URL)? Not found on the dashboard site-connection
-  pages (they show the platform ID and the API key); other pages were not checked.
-- Test and production credentials: separate platforms per environment? Not found in the code.
+- Should a merchant manage subscriptions from their own code (pause, resume, cancel, read)? Today these operations need a
+  dashboard session token and are dashboard operations. Options: dashboard only (nothing in the SDK), SDK methods taking a
+  ready token, or the gateway accepts the platform API key for them.
+- To confirm before the README is written: where a merchant finds their `company_id` (it is part of the create URL; the
+  platform settings show the platform ID and the API key), and whether test and production use separate platforms and keys.
 
 ## Change log
 
 | Date | Change |
 |------|--------|
-| 2026-10-08 | v0.1: initial draft from the backend contract and the agreed merchant example |
-| 2026-10-08 | v0.2: checked against the backend. S7 changed: `iframe` is a redirect URL, model renamed `RedirectForm`. S4 corrected: the currency allow-list is platform-wide (ops), not per company, and answers 422. Contract notes added: `callback_url` is set in the site wizard; `company_id` is not shown on the site-connection pages |
+| 2026-10-08 | v0.1: initial draft from the gateway contract and the agreed merchant example |
+| 2026-10-08 | v0.2: checked against the gateway. The `iframe` form type turned out to be a redirect URL, so the model is named `RedirectForm` and is rendered as a redirect, not an iframe. Corrected the currency note: the allow-list is platform-wide (set by the platform operator), not per company, and answers 422. Contract notes added: `callback_url` is set in the platform settings; `company_id` is not shown in the platform settings |
+| 2026-10-08 | v0.3: exceptions, retry gate, aliases, models and `create_subscription` implemented. Added to the spec what the code now does: `ConfigurationError`, `UnknownRegistrationFormError` as the cause of a read failure, client-side argument checks, plain-decimal `amount`, immutable result, API key hidden in `repr`. No change to the agreed example or signatures |

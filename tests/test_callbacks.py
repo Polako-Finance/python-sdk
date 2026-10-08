@@ -1,96 +1,100 @@
-"""Smoke: parse_payment_callback for both callback formats."""
+"""parse_payment_callback for both callback formats."""
 
 import json
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
 
 from polako.sdk import PolakoClient
+from tests.factories import make_legacy_callback_body, make_refund_callback_body, make_signed_callback_body
+from tests.generators import generate_api_key
 
-SECRET = "test-secret"
-
-
-def sign(source: str) -> str:
-    return PolakoClient._create_signature(source, SECRET)
+FORMATS = [make_legacy_callback_body, make_signed_callback_body]
 
 
-def legacy_payload(**overrides) -> str:
-    body = {
-        "order_id": "ORDER-1",
-        "total": "200.00",
-        "currency": "RSD",
-        "success": 1,
-        "tx_id": "tx-1",
-        "tx_meta": {},
-        "datetime": "2026-05-01 12:30",
-    }
-    body.update(overrides)
-    body.setdefault("signature", sign(f"{body['order_id']}|{body['total']}|{body['success']}"))
-    return json.dumps(body)
+@pytest.fixture
+def secret_key() -> str:
+    return generate_api_key()
 
 
-def signed_payload(**overrides) -> str:
-    body = {
-        "type": "payment",
-        "status": "success",
-        "schema": "1.1",
-        "order_id": "ORDER-1",
-        "session_id": "s1",
-        "event_id": "ev-1",
-        "tx_meta": {},
-        "timestamp": "2026-05-01T12:30:00",
-        "currency": "RSD",
-        "total": "200.00",
-        "merchant": {"name": "Shop", "pib": "123", "address": "Main 1"},
-    }
-    body.update(overrides)
-    amount = body.get("total") or body.get("refunded_amount")
-    body.setdefault("signature", sign(f"{body['type']}|{body['status']}|{body['order_id']}|{amount}|{body['currency']}"))
-    return json.dumps(body)
+def test_legacy_callback_parsed(secret_key):
+    body = make_legacy_callback_body(secret_key)
 
+    callback = PolakoClient.parse_payment_callback(json.dumps(body), secret_key)
 
-def test_legacy_callback_parsed():
-    callback = PolakoClient.parse_payment_callback(legacy_payload(), SECRET)
-    assert callback.order_id == "ORDER-1"
-    assert callback.total == Decimal("200.00")
+    assert callback.order_id == body["order_id"]
+    assert callback.total == Decimal(body["total"])
+    assert callback.currency == body["currency"]
+    assert callback.tx_id == body["tx_id"]
+    assert callback.tx_meta == body["tx_meta"]
+    assert callback.datetime == datetime.strptime(body["datetime"], "%Y-%m-%d %H:%M")
     assert callback.success is True
     assert callback.schema_version is None
 
 
-def test_legacy_failed_flag():
-    assert PolakoClient.parse_payment_callback(legacy_payload(success=0), SECRET).success is False
+def test_legacy_failed_flag(secret_key):
+    body = make_legacy_callback_body(secret_key, success=0)
+
+    assert PolakoClient.parse_payment_callback(json.dumps(body), secret_key).success is False
 
 
-def test_signed_payment_callback_parsed():
-    callback = PolakoClient.parse_payment_callback(signed_payload(), SECRET)
+def test_signed_payment_callback_parsed(secret_key):
+    body = make_signed_callback_body(secret_key)
+
+    callback = PolakoClient.parse_payment_callback(json.dumps(body), secret_key)
+
     assert callback.callback_type == "payment"
     assert callback.schema_version == "1.1"
-    assert callback.session_id == "s1"
-    assert callback.tx_id == "ev-1"
-    assert callback.merchant is not None and callback.merchant.pib == "123"
+    assert callback.order_id == body["order_id"]
+    assert callback.session_id == body["session_id"]
+    assert callback.tx_id == body["event_id"]
+    assert callback.total == Decimal(body["total"])
+    assert callback.success is True
+    assert callback.datetime == datetime.fromisoformat(body["timestamp"])
+    assert callback.merchant is not None
+    assert callback.merchant.name == body["merchant"]["name"]
+    assert callback.merchant.pib == body["merchant"]["pib"]
+    assert callback.merchant.address == body["merchant"]["address"]
 
 
-def test_signed_refund_callback_parsed():
-    payload = signed_payload(
-        type="refund",
-        total=None,
-        refunded_amount="50.00",
-        refunded_items=[{"code": "SKU-1", "qty": 1}],
-        refundable=150.0,
-    )
-    callback = PolakoClient.parse_payment_callback(payload, SECRET)
+def test_signed_failed_status(secret_key):
+    body = make_signed_callback_body(secret_key, status="failed")
+
+    assert PolakoClient.parse_payment_callback(json.dumps(body), secret_key).success is False
+
+
+def test_signed_refund_callback_parsed(secret_key):
+    body = make_refund_callback_body(secret_key)
+
+    callback = PolakoClient.parse_payment_callback(json.dumps(body), secret_key)
+
     assert callback.callback_type == "refund"
-    assert callback.refunded_amount == Decimal("50.00")
-    assert callback.refunded_items is not None and callback.refunded_items[0].qty == 1
-    assert callback.refundable == Decimal("150.0")
+    assert callback.refunded_amount == Decimal(body["refunded_amount"])
+    assert callback.refunded_items is not None
+    assert callback.refunded_items[0].code == body["refunded_items"][0]["code"]
+    assert callback.refunded_items[0].qty == body["refunded_items"][0]["qty"]
+    assert callback.refundable == Decimal(str(body["refundable"]))
 
 
-@pytest.mark.parametrize("make_payload", [legacy_payload, signed_payload])
-def test_bad_signature_rejected(make_payload):
+@pytest.mark.parametrize("make_body", FORMATS)
+def test_bad_signature_rejected(make_body, secret_key):
+    body = make_body(secret_key, signature="0" * 64)
+
     with pytest.raises(AssertionError):
-        PolakoClient.parse_payment_callback(make_payload(signature="0" * 64), SECRET)
+        PolakoClient.parse_payment_callback(json.dumps(body), secret_key)
 
 
-@pytest.mark.parametrize("make_payload", [legacy_payload, signed_payload])
-def test_signature_not_checked_without_secret(make_payload):
-    assert PolakoClient.parse_payment_callback(make_payload(signature="bogus")).order_id == "ORDER-1"
+@pytest.mark.parametrize("make_body", FORMATS)
+def test_signature_of_another_key_rejected(make_body, secret_key):
+    body = make_body(generate_api_key())
+
+    with pytest.raises(AssertionError):
+        PolakoClient.parse_payment_callback(json.dumps(body), secret_key)
+
+
+@pytest.mark.parametrize("make_body", FORMATS)
+def test_signature_not_checked_without_secret(make_body, secret_key):
+    body = make_body(secret_key, signature="bogus")
+
+    assert PolakoClient.parse_payment_callback(json.dumps(body)).order_id == body["order_id"]
