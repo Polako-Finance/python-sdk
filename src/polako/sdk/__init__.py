@@ -62,6 +62,7 @@ from polako.sdk._order import (
     SessionInfo,
     ShoppingCart,
 )
+from polako.sdk._render import render_registration_form
 from polako.sdk._subscription import (
     FormPost,
     HppFormPost,
@@ -122,6 +123,7 @@ __all__ = [
     "SubscriptionWebhookEvent",
     "parse_subscription_webhook",
     "parse_registration_failed",
+    "render_registration_form",
     # Exceptions
     "ConfigurationError",
     "WebhookSignatureError",

@@ -8,6 +8,7 @@ from polako.sdk import (
     ConflictError,
     RegistrationFailed,
     SubscriptionCancelled,
+    render_registration_form,
 )
 from tests.factories import make_subscribe_args
 from tests.generators import generate_api_key, generate_readable_string
@@ -17,6 +18,21 @@ from tests.integration.merchant_receiver import MerchantReceiver
 async def create(client, receiver, **args):
     """Create a subscription whose registration failures go to the merchant's endpoint."""
     return await client.create_subscription(**make_subscribe_args(error_url=receiver.error_url, **args))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form_type", ["form_post", "hpp_form_post", "iframe"])
+async def test_the_page_for_every_kind_of_form_the_gateway_sends_carries_its_address(
+    gateway_server, merchant_client, merchant_receiver, form_type
+):
+    gateway_server.form_type = form_type
+    async with merchant_client as client:
+        created = await create(client, merchant_receiver)
+
+    html = render_registration_form(created.registration_form)
+
+    assert created.registration_form.action in html.replace("&amp;", "&")
+    assert ("<form" in html) == (form_type != "iframe")
 
 
 @pytest.mark.asyncio

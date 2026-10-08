@@ -1,16 +1,16 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.5** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+**Status: DRAFT v0.8** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
 gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
-`parse_registration_failed`. Not yet: the form rendering helper, README and example. Scope: **creating a subscription, full cycle**
-(create, render the 3DS form, receive webhooks). Subscription management is out of scope until it is decided whether merchants
-should manage subscriptions from their own code (see Open questions).
+`parse_registration_failed` and `render_registration_form`, plus the README section and the example. Scope: **creating a subscription, full cycle**
+(create, render the 3DS form, receive webhooks). Subscription management comes later, after the gateway accepts the platform API key
+for it (see Planned).
 
 ## How to use this document
 
 This is the source of truth for the subscription surface of the SDK. The order of work is outside-in:
 
-1. the interface and the merchant example below are agreed first;
+1. the interface and the merchant example (`examples/subscription_example.py`) are agreed first;
 2. tests and implementation follow them; if the implementation cannot match, the **spec is changed first** (see the
    change log), then the code;
 3. `examples/` and the README sections are written from it and must match it (the docs checker verifies signatures).
@@ -23,7 +23,7 @@ In: authentication of the create call, `create_subscription`, models for the req
 registration forms, form rendering helper, webhook parsers (four lifecycle events and the registration-failed
 notification), exceptions by HTTP status, retries for keyed requests.
 
-Out (open): management methods (detail, list, pause, resume, cancel, payments), retries for payment methods,
+Out: management methods (detail, list, pause, resume, cancel, payments; blocked on the gateway, see Planned), retries for payment methods,
 unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production.
 
 ## Gateway contract (verified 2026-10-08)
@@ -59,65 +59,11 @@ unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptS
 
 ## Target merchant code (acceptance example)
 
-```python
-from decimal import Decimal
-from uuid import UUID, uuid4
-
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from polako.sdk import (
-    BillingInterval, ChargeFailed, ChargeSucceeded, ConflictError, PolakoClient, RateLimitedError,
-    WebhookSignatureError, parse_registration_failed, parse_subscription_webhook, render_registration_form,
-)
-
-COMPANY_ID = UUID("00000000-0000-0000-0000-000000000000")  # your company ID
-API_KEY = "your-secret-key"                                # the same API key as for payments
-
-app = FastAPI()
-
-
-@app.post("/subscribe")
-async def subscribe():
-    key = str(uuid4())  # save it with your order before the call: a retry after a crash then reuses it
-    async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
-        try:
-            created = await client.create_subscription(
-                customer_email="jane.smith@example.com",
-                amount=Decimal("990.00"),
-                currency="RSD",
-                billing_interval=BillingInterval.MONTHLY,
-                merchant_subscription_ref="plan-pro-monthly",
-                success_url="https://shop.example.com/subscribe/success",
-                cancel_url="https://shop.example.com/subscribe/cancel",
-                error_url="https://shop.example.com/polako/subscription-error",
-                idempotency_key=key,
-            )
-        except ConflictError:
-            raise HTTPException(409, "You already have this subscription")
-        except RateLimitedError as e:
-            raise HTTPException(429, f"Try again in {e.retry_after} s")
-    return HTMLResponse(render_registration_form(created.registration_form))  # customer goes through 3DS
-
-
-@app.post("/polako/subscription-webhook")
-async def subscription_webhook(request: Request):
-    try:
-        event = parse_subscription_webhook(await request.body(), request.headers.get("X-Signature"), API_KEY)
-    except WebhookSignatureError:
-        raise HTTPException(400, "invalid signature")
-    if isinstance(event, ChargeSucceeded):
-        ...  # extend access: event.subscription_id, event.amount, event.charged_at
-    elif isinstance(event, ChargeFailed):
-        ...  # event.error_class
-    return {"status": "ok"}
-
-
-@app.post("/polako/subscription-error")
-async def subscription_error(request: Request):
-    failure = parse_registration_failed(await request.body(), request.headers.get("X-Signature"), API_KEY)
-    ...  # failure.subscription_id, failure.error_message
-    return {"status": "ok"}
-```
+The acceptance example is `examples/subscription_example.py`, a complete merchant server (create a subscription, return the
+card registration page, read the webhooks and the registration-failure notification, with the SDK's errors turned into HTTP
+answers). The `Subscriptions` section of the README shows the same flow in pieces. Both are verified against the real
+signatures by the documentation check, and the example has been run end to end against the gateway emulator of the
+tests. A change to the flow is made in this spec first, then in the example and the README.
 
 ## Interface
 
@@ -126,7 +72,7 @@ async def subscription_error(request: Request):
 | Client | `PolakoClient(timeout=30.0, test_env=False, company_id: UUID \| None = None, api_key: str \| None = None)`; payment methods unchanged |
 | Create | `await create_subscription(*, customer_email, amount: Decimal, currency: str, billing_interval: BillingInterval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key: str \| None = None) -> SubscriptionCreated` |
 | Result | `SubscriptionCreated`: `subscription_id`, `registration_form`, `idempotency_key` (the one used, also when generated) |
-| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` |
+| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed`: `subscription_id` (a `UUID`), `merchant_subscription_ref`, `error_message`, `provider_name` (each may be `None` but the id), `signature_verified`; immutable. The model states that it has no event (`event = None`, unlike every lifecycle event) and that `success = 0`; `order_id` is not kept because it always equals `subscription_id` |
 | Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` (a `WebhookSignatureError`), `WebhookPayloadError` (a `ValueError`: the signed body is not JSON, not an object, has no event name, or a field is missing or malformed) |
@@ -155,6 +101,17 @@ Behaviour rules:
   never accepted. A missing (or blank) signature is rejected unless `allow_unsigned=True`, and then the result has
   `signature_verified=False` and is otherwise read and validated exactly like a signed one. `allow_unsigned` is
   keyword-only, and an empty `api_key` is a `ConfigurationError` in every mode.
+- The rendered page follows the card processor's expectations, not the gateway's naming. A `FormPost` becomes a POST form
+  with nine hidden inputs named `Version`, `MerchantID`, `TerminalID`, `TotalAmount`, `Currency`, `Locale`, `PurchaseTime`,
+  `OrderID` and `Signature` (an empty version is sent as `1`); an `HppFormPost` passes the provider's fields through as
+  given, in order; a `RedirectForm` is a link, plus a `refresh` redirect when `auto_submit` is on, never a form and never
+  an `<iframe>`. With `auto_submit` on a posted form submits itself with one constant script and has a button inside
+  `<noscript>`; with it off the page has a visible button and no script (for sites that forbid inline scripts).
+- The helper refuses what could be turned against the customer: the address must be an http or https URL with a host, and
+  must contain no whitespace or control characters (`ValueError`); every name, value and address is HTML-escaped; the
+  script holds no data from the form; the page loads nothing from elsewhere; anything that is not a registration form is a
+  `TypeError`. The input names for `FormPost` are taken from the working reference page of the gateway's own integration
+  tools; confirm them against the staging environment before relying on them in production.
 - Times with a trailing `Z` are read as UTC on every supported Python version. An unknown event name is returned, not
   raised; unknown fields of a known event are ignored.
 - Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
@@ -170,15 +127,27 @@ Behaviour rules:
 | currency-checked-by-server | `currency` is a plain string validated by the server (SDK constants know only RSD, the gateway knows RSD, RUB, EUR, USD and applies a platform-wide allow-list that answers 422) | implemented |
 | unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | implemented |
 | retry-502 | 502 is retried like any 5xx, keyed requests only, bounded | implemented |
-| redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | assumed |
+| redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | implemented |
+| management-by-api-key | Merchants manage subscriptions (detail, list, pause, resume, cancel, payments) with the platform API key as well as from the dashboard; the gateway adds an external route for each operation and the SDK calls those. Decided 2026-10-08; the SDK methods wait for the gateway change | agreed, blocked on the gateway |
 
 "Assumed" means: agreed as the working choice on 2026-10-08, not built yet, to be confirmed or changed. "Implemented" means the code follows it. Both stay open to change; change it here first.
 
+## Planned: subscription management (blocked on the gateway)
+
+Merchants will manage subscriptions from their own code with the same platform API key, as well as from the dashboard
+(decision `management-by-api-key`). Today these operations need a dashboard session and are not reachable with an API key
+at all, because the gateway checks the session before the request reaches the service. So for every operation the gateway
+gets a second, external route next to the dashboard one (as a payment session's refund and status already have), both
+served by the same service, and the SDK methods call the external routes with `company_api_key`. Until those routes exist
+the SDK has no management methods.
+
+Operations: the detail of a subscription, a list with filters, pause, resume, cancel (optionally refunding the last charge)
+and the payments of a subscription. Method names, signatures, models and errors are agreed here before they are written.
+Requirements already known: a subscription of another company is refused (HTTP 403); an illegal change of status must be
+distinguishable from a network error; reads are not retried without a key, a change that carries an `Idempotency-Key` is.
+
 ## Open questions
 
-- Should a merchant manage subscriptions from their own code (pause, resume, cancel, read)? Today these operations need a
-  dashboard session token and are dashboard operations. Options: dashboard only (nothing in the SDK), SDK methods taking a
-  ready token, or the gateway accepts the platform API key for them.
 - To confirm before the README is written: where a merchant finds their `company_id` (it is part of the create URL; the
   platform settings show the platform ID and the API key), and whether test and production use separate platforms and keys.
 
@@ -191,3 +160,6 @@ Behaviour rules:
 | 2026-10-08 | v0.3: exceptions, retry gate, aliases, models and `create_subscription` implemented. Added to the spec what the code now does: `ConfigurationError`, `UnknownRegistrationFormError` as the cause of a read failure, client-side argument checks, plain-decimal `amount`, immutable result, API key hidden in `repr`. No change to the agreed example or signatures |
 | 2026-10-08 | v0.4: the signature check and `parse_subscription_webhook` implemented. Added to the spec: `WebhookPayloadError`, the `SubscriptionWebhookEvent` alias, the event fields, verify-before-read rule, UTF-8 only. The merchant example now reads the header with `.get("X-Signature")` and the function accepts a missing header (it raises `MissingSignatureError`), instead of a `KeyError` in the merchant's code |
 | 2026-10-08 | v0.5: `parse_registration_failed` implemented, with the `allow_unsigned` policy. Added to the spec: the registration failure is a model of its own with `event = None` and `success = 0`, and the two parsers reject each other's bodies with a pointer to the right function; `success` must be 0 or false (missing accepted); `order_id` always equals `subscription_id` and is not kept; a present signature is always checked, a missing one is rejected unless `allow_unsigned=True`. Decisions that the code now follows are marked implemented |
+| 2026-10-08 | v0.6: subscription management is no longer an open question. Decided that merchants manage subscriptions with the platform API key as well as from the dashboard, which needs an external route per operation in the gateway; the SDK methods are planned and wait for that change. Section Planned added, the question removed from Open questions |
+| 2026-10-08 | v0.7: `render_registration_form` implemented. Added to the spec: the exact input names of a posted `form_post` (the processor's names, not the gateway's camelCase), pass-through of the provider fields, the redirect page for the `iframe` wire type, the `auto_submit` behaviour, and the safety rules (http/https address with no whitespace or control characters, escaping, one constant script, nothing loaded from elsewhere). The `redirect-form` decision is marked implemented |
+| 2026-10-08 | v0.8: the README section and `examples/subscription_example.py` are written. The acceptance example moved out of this file into `examples/subscription_example.py` (one copy, checked by the documentation check, so it cannot drift from this spec unnoticed); the flow itself did not change except that the example turns every error of the SDK into an HTTP answer. The example was run end to end against the gateway emulator on Python 3.10 and 3.13 |

@@ -27,6 +27,7 @@ All under `src/polako/sdk/`; the package exports its public names from `__init__
 | `_serializable.py` | Dataclass (de)serialization with wire aliases (`alias` metadata) and a decode hook |
 | `_order.py` | Payment models |
 | `_subscription.py` | The subscription request and response, the three registration forms, `SubscriptionCreated` |
+| `_render.py` | Turns a registration form into a self-submitting or redirecting HTML page (escaping, http/https address rule) |
 | `_webhook.py` | Signature verification, the subscription events, the registration-failure notification |
 | `_constants.py` | Currencies, languages, tax schemas, `BillingInterval`, base URLs |
 
@@ -38,7 +39,7 @@ Three independent checks, each with its own entry point and none depending on th
 |-------|-------|----------------|
 | Tests | `tests/` (a separate Poetry project with its own `pyproject.toml` and lock file), `make test` / `make test-cov` (coverage of `polako.sdk`) | SDK behaviour against a fake gateway: `conftest.py` patches `httpx.AsyncClient` with `httpx.MockTransport` and records every request |
 | Lint and types | `make lint`, `make type-check` | black, isort, flake8 on `src/` and `tests/`; mypy on `src/` |
-| Documentation check | `scripts/check_docs.py`, `make check-docs`, CI job `docs` | Python blocks in `README.md`, `README.pypi.md`, `examples/README.md` |
+| Documentation check | `scripts/check_docs.py`, `make check-docs`, CI job `docs` | Python blocks in `README.md`, `README.pypi.md`, `examples/README.md`, and every file in `examples/` |
 
 ### Tests
 
@@ -73,9 +74,9 @@ distribution excludes `tests/`. The tests stay in the repository for anyone who 
 
 The documentation is written for merchants and is never adapted to tests or tooling (see DECISIONS #3, #4). The checker follows the docs:
 
-1. Every python block is identified as `file::nearest heading::ordinal` and pinned by a hash in `scripts/docs_manifest.json`.
+1. Every python block of the markdown docs is identified as `file::nearest heading::ordinal`, and every file in `examples/` as `file::file::0`; each is pinned by a hash in `scripts/docs_manifest.json`.
 2. A new, changed or removed block fails the check. After reviewing the doc change, a developer runs `python scripts/check_docs.py --update` (or `make docs-update`); the manifest keeps the check kind (`static` or `skip`) of known blocks.
-3. A `static` block is verified without running it: syntax, names imported from `polako.sdk`, and that calls to SDK classes and client methods fit their real signatures. Calls with `...`, `*args` or `**kwargs` are treated as elided.
+3. A `static` block is verified without running it: syntax, names imported from `polako.sdk`, and that calls to SDK classes, SDK functions and client methods fit their real signatures. Calls with `...`, `*args` or `**kwargs` are treated as elided.
 
 ## Migration Impact
 

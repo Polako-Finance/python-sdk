@@ -133,6 +133,158 @@ if callback.merchant:
     print(f"Address: {callback.merchant.address}")
 ```
 
+## Subscriptions
+
+A subscription charges a customer's card on a schedule. You create it, the customer goes through a one-time card
+registration (3DS), and from then on the gateway charges the card every billing interval and tells your server about
+every charge.
+
+You need:
+
+- the **company ID** and the **API key** of your platform (the same API key that signs payments);
+- a **webhook URL** for your platform, set in the platform settings in the dashboard: charge notifications are sent there;
+- an **error URL**, which you give for every subscription: a failed card registration is reported there.
+
+### Create a subscription and send the customer to the card registration
+
+```python
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from polako.sdk import BillingInterval, PolakoClient, render_registration_form
+
+COMPANY_ID = UUID("00000000-0000-0000-0000-000000000000")  # your company ID
+API_KEY = "your-secret-key"  # the API key of your platform
+
+app = FastAPI()
+
+
+@app.post("/subscribe")
+async def subscribe():
+    key = str(uuid4())  # keep it with your order before the call: repeating a request with the same key is safe
+    async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
+        created = await client.create_subscription(
+            customer_email="jane.smith@example.com",
+            amount=Decimal("990.00"),
+            currency="RSD",
+            billing_interval=BillingInterval.MONTHLY,
+            merchant_subscription_ref="plan-pro-monthly",
+            success_url="https://shop.example.com/subscribe/success",
+            cancel_url="https://shop.example.com/subscribe/cancel",
+            error_url="https://shop.example.com/polako/subscription-error",
+            idempotency_key=key,
+        )
+    return HTMLResponse(render_registration_form(created.registration_form))
+```
+
+- `create_subscription` returns a `SubscriptionCreated` with the `subscription_id`, the `registration_form` and the
+  `idempotency_key` that was used (a key is generated if you do not pass one).
+- The subscription becomes active only after the customer completes the registration. A failure is reported to your
+  error URL; every later charge is reported to your webhook URL.
+- Repeating a request with the same `idempotency_key` returns the same subscription. A request that fails on the
+  network, with HTTP 429 or with a server error is repeated for you, up to three attempts, with the same key.
+- The endpoint accepts 20 requests per 60 seconds. Beyond that you get a `RateLimitedError` with `retry_after` set.
+- `merchant_subscription_ref` is your own reference to the plan or product (1 to 128 characters). A customer can have
+  one live subscription per reference; a second one is a `ConflictError`.
+- `render_registration_form` returns a complete HTML page: a form that posts the customer to the card processor, or a
+  redirect, depending on the processor. Return it as an HTML response. It sends the customer on at once with one small
+  script; pass `auto_submit=False` if your site forbids inline scripts, and the customer presses a button instead.
+
+### Read the webhooks
+
+```python
+from fastapi import HTTPException, Request
+from polako.sdk import (
+    ChargeFailed,
+    ChargeSucceeded,
+    DroppedExternally,
+    SubscriptionCancelled,
+    WebhookPayloadError,
+    WebhookSignatureError,
+    parse_subscription_webhook,
+)
+
+
+@app.post("/polako/subscription-webhook")
+async def subscription_webhook(request: Request):
+    try:
+        event = parse_subscription_webhook(await request.body(), request.headers.get("X-Signature"), API_KEY)
+    except WebhookSignatureError:
+        raise HTTPException(status_code=400, detail="invalid signature")
+    except WebhookPayloadError:
+        raise HTTPException(status_code=422, detail="invalid payload")
+
+    if isinstance(event, ChargeSucceeded):
+        print(f"Charged {event.amount} {event.currency} for {event.merchant_subscription_ref}")
+    elif isinstance(event, ChargeFailed):
+        print(f"Charge failed for {event.merchant_subscription_ref}: {event.error_class}")
+    elif isinstance(event, DroppedExternally):
+        print(f"The card of {event.merchant_subscription_ref} was revoked")
+    elif isinstance(event, SubscriptionCancelled):
+        print(f"{event.merchant_subscription_ref} was cancelled")
+    return {"status": "ok"}
+```
+
+| Event | Meaning | Fields besides `subscription_id` and `merchant_subscription_ref` |
+|-------|---------|------------------------------------------------------------------|
+| `ChargeSucceeded` | A scheduled charge went through | `amount` (`Decimal`), `currency`, `charged_at` |
+| `ChargeFailed` | A charge failed | `error_class` |
+| `DroppedExternally` | The card agreement was revoked by the card provider | none |
+| `SubscriptionCancelled` | The subscription was cancelled | none |
+| `UnknownSubscriptionEvent` | A kind of event this version of the SDK does not know | `event` (its name), `data` (the whole payload) |
+
+**Pass the body exactly as you received it.** The signature is checked over the raw bytes, so JSON that your framework
+has parsed and serialized again no longer matches and is rejected. Use the raw body (`await request.body()` above).
+
+Answer with a 2xx status. A server error or no answer makes the gateway try again, up to three attempts; any other
+error status is final.
+
+### Read the registration failure
+
+When the card registration fails, the gateway sends a notification to the error URL you gave. It has no `event` field,
+so it is read with its own function.
+
+```python
+from polako.sdk import parse_registration_failed
+
+
+@app.post("/polako/subscription-error")
+async def subscription_error(request: Request):
+    try:
+        failure = parse_registration_failed(await request.body(), request.headers.get("X-Signature"), API_KEY)
+    except WebhookSignatureError:
+        raise HTTPException(status_code=400, detail="invalid signature")
+    print(f"Registration of {failure.merchant_subscription_ref} failed: {failure.error_message}")
+    return {"status": "ok"}
+```
+
+`parse_registration_failed` and `parse_subscription_webhook` each refuse the other's body and tell you which function to
+use, so a mixed-up URL is easy to spot. A notification without a signature is rejected. Subscriptions made without a
+platform are notified unsigned; pass `allow_unsigned=True` to accept those, and check `failure.signature_verified`:
+it is `False` for them, because anyone who knows your URL could send such a notification.
+
+### Errors
+
+| Exception | HTTP status | Meaning |
+|-----------|-------------|---------|
+| `UnauthorizedError` | 401 | The API key is missing or unknown |
+| `ForbiddenError` | 403 | The API key belongs to another company |
+| `ConflictError` | 409 | Subscriptions are switched off for your company, or the customer already has a live subscription with this reference |
+| `RequestValidationError` | 422 | A field was rejected, for example a currency that is not allowed |
+| `RateLimitedError` | 429 | Too many requests; `retry_after` is the number of seconds to wait |
+| `ServerError` | 5xx | The gateway or the card processor failed |
+
+All of them are `HttpRequestError`s, so `except HttpRequestError` still catches every one. A network error is an
+`HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and an
+invalid argument is a `ValueError` before any request.
+
+### Managing a subscription
+
+For now pausing, resuming and cancelling a subscription are done in the dashboard. When a subscription is cancelled
+there, your webhook receives `SubscriptionCancelled`.
+
 ## Configuration
 
 ### Client Options
@@ -189,6 +341,11 @@ except Exception as e:
     # Unexpected error
     print(f"Unexpected error: {e}")
 ```
+
+Beyond `HttpRequestError`, the SDK raises a class of its own for the statuses you will want to handle separately:
+`UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422),
+`RateLimitedError` (429, with `retry_after`) and `ServerError` (5xx). All of them are subclasses of `HttpRequestError`, so
+the code above keeps working. See [Subscriptions](#subscriptions) for what they mean there.
 
 ## Advanced Usage
 
@@ -258,6 +415,13 @@ Async client for Polako Finance API.
 - `async check_order_status(session_id, platform_id, secret_key)` - Check the status of a payment session
 - `async refund_session(session_id, platform_id, secret_key, reason, refund_items=None)` - Full or partial refund
 - `parse_payment_callback(payload, secret_key)` - Parse payment callback (static method)
+- `async create_subscription(*, customer_email, amount, currency, billing_interval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key=None)` - Create a subscription (the client needs `company_id` and `api_key`)
+
+#### Functions
+
+- `parse_subscription_webhook(body, signature, api_key)` - Check and read a subscription webhook: `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent`
+- `parse_registration_failed(body, signature, api_key, *, allow_unsigned=False)` - Check and read the notification about a failed card registration
+- `render_registration_form(form, *, auto_submit=True)` - Turn a registration form into an HTML page for the customer
 
 #### Context Manager
 
@@ -282,6 +446,10 @@ async with PolakoClient() as client:
 - `PaymentSessionDetails`, `PaymentOption`, `PaymentUrlResult`, `InitCustomerInfo` - Session details and payment URL
 - `OrderStatusResponse`, `OrderStatusItem` - Result of `check_order_status`
 - `RefundItem`, `RefundResponse`, `RefundedItem` - Refunds
+- `SubscriptionCreated`, `BillingInterval` - Result and input of `create_subscription`
+- `FormPost`, `HppFormPost`, `RedirectForm` - The three kinds of registration form
+- `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled`, `UnknownSubscriptionEvent` - Subscription webhook events (type alias `SubscriptionWebhookEvent`)
+- `RegistrationFailed` - A failed card registration
 
 ## Support
 

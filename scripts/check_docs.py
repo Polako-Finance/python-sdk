@@ -3,11 +3,12 @@ Check that the python code blocks in the documentation still match the SDK.
 
 The documentation is the source of truth and knows nothing about this script. The script follows the docs:
 
-* every python block is pinned by a hash in ``docs_manifest.json``;
-* when a block is edited, added or removed the check fails, a developer reviews the change and runs
+* every python block of the markdown docs, and every file in ``examples/``, is pinned by a hash in
+  ``docs_manifest.json``;
+* when a block or a file is edited, added or removed the check fails, a developer reviews the change and runs
   ``python scripts/check_docs.py --update`` (or ``make docs-update``) to accept it;
 * every pinned block is checked statically (nothing is executed): syntax, ``from polako.sdk import ...`` names,
-  and that calls to SDK classes and client methods fit the real signatures.
+  and that calls to SDK classes, SDK functions and client methods fit the real signatures.
 
 Usage:
     python scripts/check_docs.py            # verify
@@ -88,6 +89,8 @@ def check_static(code: str) -> List[str]:
             func, message, label = node.func, "", ""
             if isinstance(func, ast.Name) and inspect.isclass(getattr(sdk, func.id, None)):
                 label, message = func.id, _bind(inspect.signature(getattr(sdk, func.id)), node, False)
+            elif isinstance(func, ast.Name) and inspect.isfunction(getattr(sdk, func.id, None)):
+                label, message = func.id, _bind(inspect.signature(getattr(sdk, func.id)), node, False)
             elif isinstance(func, ast.Attribute) and func.attr in CLIENT_METHODS:
                 static = isinstance(inspect.getattr_static(CLIENT, func.attr), staticmethod)
                 label = func.attr
@@ -106,6 +109,8 @@ def current_blocks() -> Dict[str, str]:
     for doc in DOCS:
         for key, code in extract_blocks(ROOT / doc):
             found[key] = code
+    for example in sorted((ROOT / "examples").glob("*.py")):
+        found[f"{example.relative_to(ROOT).as_posix()}::file::0"] = example.read_text(encoding="utf-8")
     return found
 
 

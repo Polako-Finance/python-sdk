@@ -50,6 +50,29 @@ python callback_example.py
 - Processing successful payments
 - Handling failed payments
 
+### 3. Subscriptions (`subscription_example.py`)
+
+A small merchant server (FastAPI) for the whole subscription flow: it creates a subscription, sends the customer to the
+card registration, and reads the notifications the gateway sends afterwards (every charge, a revoked card, a cancellation
+and a failed card registration).
+
+**Run:**
+```bash
+pip install polako-finance fastapi uvicorn
+uvicorn subscription_example:app --port 8000
+curl -X POST "http://localhost:8000/subscribe?email=jane.smith@example.com"
+```
+
+The gateway has to reach the two notification URLs, so set `SHOP_URL` in the file to an address it can open (for example a
+tunnel to your machine while you try this out), and put your company ID and the API key of your platform into
+`COMPANY_ID` and `API_KEY`.
+
+**Key features:**
+- Creating a subscription with an idempotency key you keep with your order
+- Returning the page that sends the customer to the card registration
+- Reading subscription webhooks and the failed-registration notification from the raw request body
+- Turning the errors of the SDK into HTTP answers
+
 ## Configuration
 
 Before running the examples, update the following values:
