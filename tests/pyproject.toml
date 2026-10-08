@@ -17,6 +17,8 @@ polako-finance = { path = "..", develop = true }
 pytest = ">=9.0.3"
 pytest-asyncio = ">=0.21.1"
 pytest-cov = ">=4.1.0"
+# The gateway emulator and the merchant receiver in tests/integration are aiohttp applications.
+aiohttp = ">=3.9"
 
 [tool.pytest.ini_options]
 testpaths = ["."]

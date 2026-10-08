@@ -281,7 +281,9 @@ poetry -C tests run pytest --cov=polako.sdk --cov-report=term
 poetry -C tests run pytest test_client.py
 ```
 
-The tests run against an in-process fake gateway and never use the network.
+Most tests run against an in-process fake gateway. The tests in `tests/integration` run the whole subscription flow
+against a local emulator of the gateway over real HTTP on free local ports, with a small merchant endpoint that reads
+webhooks with the SDK. Nothing leaves your machine.
 
 > The `Makefile` offers shortcuts for the commands in this section (`make test`, `make test-cov`, `make lint`,
 > `make format`, `make type-check`, `make check`, `make check-docs`, `make docs-update`). They need GNU make

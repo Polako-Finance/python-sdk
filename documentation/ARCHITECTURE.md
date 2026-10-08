@@ -52,9 +52,22 @@ distribution excludes `tests/`. The tests stay in the repository for anyone who 
 - **Fake gateway:** the `gateway` fixture in `conftest.py` records every request and answers from a per-test script,
   including exceptions for network failures; the `sleeps` fixture replaces the wait between retries.
 - **Run:** `poetry -C tests run pytest` (or `make test`). CI runs the job `test` on Python 3.10, 3.11, 3.12 and 3.13.
-- **Planned:** end-to-end tests of the whole chain (create a subscription, the registration result, webhooks arriving at a
-  receiver that uses the SDK) against a local gateway emulator over real HTTP. The emulator and its HTTP library will be
-  dependencies of the tests project only; the existing fake-gateway tests stay for failures that are hard to produce over a socket.
+- **End-to-end tests** (`tests/integration/`, DECISIONS #14) run the whole subscription chain over real HTTP on the
+  loopback interface, with two local `aiohttp` servers on free ports:
+  - `gateway_test_server.py`, an emulator of the gateway. It models what the gateway is documented to do for
+    subscriptions: the subscribe endpoint with its checks in the gateway's order (validation, then the platform API key,
+    then the service rules), idempotency replay, the three kinds of registration form, a rate limit with `Retry-After`,
+    planned outages, dropped connections and card-processor refusals; and the other direction: lifecycle webhooks and the
+    registration-failure notification, signed and retried the way the gateway does it (compact JSON with sorted keys,
+    HMAC-SHA256 under the platform API key, three attempts for 5xx and network errors, 4xx final; one attempt for the
+    registration failure, which is unsigned for a subscription made without a platform). Every request and delivery is
+    recorded. It is a model written from the contract, so it cannot show where the real gateway differs.
+  - `merchant_receiver.py`, a merchant's endpoint written the way the documentation tells a merchant to write it: it
+    reads the raw body and passes it to the SDK. It can also play a merchant who serializes the JSON again, one whose
+    endpoint is failing, and one who accepts unsigned notifications.
+  The SDK is pointed at the emulator by replacing the test base URL for the length of a test (the `gateway_server`
+  fixture); no production code has a hook for tests. Waits between retries are replaced and the emulator's clock is
+  injectable, so no test sleeps. The fake-gateway tests stay for failures that are hard to produce over a socket.
 
 ### Documentation check
 
