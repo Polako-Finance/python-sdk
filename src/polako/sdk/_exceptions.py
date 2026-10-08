@@ -15,6 +15,10 @@ class MissingSignatureError(WebhookSignatureError):
     """A webhook came without a signature although one is required."""
 
 
+class WebhookPayloadError(ValueError):
+    """The body of a webhook is not a valid event: it is not JSON, a field is missing or a value is malformed."""
+
+
 class HttpClientError(Exception):
     """Base exception for HTTP client errors."""
 

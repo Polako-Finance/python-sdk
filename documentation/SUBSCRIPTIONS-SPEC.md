@@ -1,7 +1,8 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.3** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
-gate, wire aliases, the models and `create_subscription`. Not yet: webhook parsers, form rendering helper, README and example. Scope: **creating a subscription, full cycle**
+**Status: DRAFT v0.4** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+gate, wire aliases, the models, `create_subscription`, webhook signature check and `parse_subscription_webhook`. Not yet: the
+registration-failure parser, form rendering helper, README and example. Scope: **creating a subscription, full cycle**
 (create, render the 3DS form, receive webhooks). Subscription management is out of scope until it is decided whether merchants
 should manage subscriptions from their own code (see Open questions).
 
@@ -100,7 +101,7 @@ async def subscribe():
 @app.post("/polako/subscription-webhook")
 async def subscription_webhook(request: Request):
     try:
-        event = parse_subscription_webhook(await request.body(), request.headers["X-Signature"], API_KEY)
+        event = parse_subscription_webhook(await request.body(), request.headers.get("X-Signature"), API_KEY)
     except WebhookSignatureError:
         raise HTTPException(400, "invalid signature")
     if isinstance(event, ChargeSucceeded):
@@ -125,9 +126,9 @@ async def subscription_error(request: Request):
 | Create | `await create_subscription(*, customer_email, amount: Decimal, currency: str, billing_interval: BillingInterval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key: str \| None = None) -> SubscriptionCreated` |
 | Result | `SubscriptionCreated`: `subscription_id`, `registration_form`, `idempotency_key` (the one used, also when generated) |
 | Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` |
-| Events | `parse_subscription_webhook(body: bytes \| str, signature: str, api_key: str)` returns `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` |
+| Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed` with `signature_verified` |
-| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` |
+| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` (a `WebhookSignatureError`), `WebhookPayloadError` (a `ValueError`: the signed body is not JSON, not an object, has no event name, or a field is missing or malformed) |
 
 Behaviour rules:
 - `create_subscription` without `company_id` or `api_key` raises a clear configuration error before any request.
@@ -141,6 +142,11 @@ Behaviour rules:
   https with a host; a given `idempotency_key` is not blank. Everything else is left to the server.
 - `amount` is sent as a plain decimal string (`990.00`, `1000` for `Decimal("1E+3")`), never with an exponent.
 - `SubscriptionCreated` is immutable. The client keeps the API key private and hides it in `repr`.
+- A webhook is verified before it is read: the signature is checked over the raw body exactly as received, and only then
+  is the body decoded (UTF-8 JSON only, a JSON object). A forged body is a `WebhookSignatureError` whatever it contains,
+  never a `WebhookPayloadError`. A body that was parsed and serialized again does not match; the docs say so.
+- Times with a trailing `Z` are read as UTC on every supported Python version. An unknown event name is returned, not
+  raised; unknown fields of a known event are ignored.
 - Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
   key on every attempt. 4xx other than 429 is never retried. Payment methods are not retried.
 
@@ -173,3 +179,4 @@ Behaviour rules:
 | 2026-10-08 | v0.1: initial draft from the gateway contract and the agreed merchant example |
 | 2026-10-08 | v0.2: checked against the gateway. The `iframe` form type turned out to be a redirect URL, so the model is named `RedirectForm` and is rendered as a redirect, not an iframe. Corrected the currency note: the allow-list is platform-wide (set by the platform operator), not per company, and answers 422. Contract notes added: `callback_url` is set in the platform settings; `company_id` is not shown in the platform settings |
 | 2026-10-08 | v0.3: exceptions, retry gate, aliases, models and `create_subscription` implemented. Added to the spec what the code now does: `ConfigurationError`, `UnknownRegistrationFormError` as the cause of a read failure, client-side argument checks, plain-decimal `amount`, immutable result, API key hidden in `repr`. No change to the agreed example or signatures |
+| 2026-10-08 | v0.4: the signature check and `parse_subscription_webhook` implemented. Added to the spec: `WebhookPayloadError`, the `SubscriptionWebhookEvent` alias, the event fields, verify-before-read rule, UTF-8 only. The merchant example now reads the header with `.get("X-Signature")` and the function accepts a missing header (it raises `MissingSignatureError`), instead of a `KeyError` in the merchant's code |

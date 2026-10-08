@@ -9,7 +9,7 @@ import hmac
 import json
 import random
 from decimal import Decimal
-from typing import Any, Dict, NamedTuple, Optional
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 from uuid import UUID, uuid4
 
 from polako.sdk import (
@@ -143,6 +143,68 @@ def encode_webhook_body(payload: Dict[str, Any]) -> bytes:
 def sign_webhook_body(body: bytes, api_key: str) -> str:
     """The `X-Signature` header value: HMAC-SHA256 hex digest of the raw body, written out independently of the SDK."""
     return hmac.new(api_key.encode(), body, hashlib.sha256).hexdigest()
+
+
+def make_signed_webhook(payload: Dict[str, Any], api_key: str) -> Tuple[bytes, str]:
+    """What a merchant's endpoint receives: the raw body and the `X-Signature` header value."""
+    body = encode_webhook_body(payload)
+    return body, sign_webhook_body(body, api_key)
+
+
+def make_charge_succeeded_payload(**overrides: Any) -> Dict[str, Any]:
+    """The `charge_succeeded` webhook as the gateway sends it."""
+    payload: Dict[str, Any] = {
+        "event": "charge_succeeded",
+        "subscription_id": str(uuid4()),
+        "merchant_subscription_ref": generate_readable_string(READABLE_STRING_LENGTH),
+        "amount": str(generate_random_decimal(3, 2)),
+        "currency": random.choice(CURRENCIES),
+        "charged_at": generate_recent_datetime().isoformat(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_charge_failed_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "event": "charge_failed",
+        "subscription_id": str(uuid4()),
+        "merchant_subscription_ref": generate_readable_string(READABLE_STRING_LENGTH),
+        "error_class": generate_readable_string(READABLE_STRING_LENGTH),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_dropped_externally_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "event": "dropped_externally",
+        "subscription_id": str(uuid4()),
+        "merchant_subscription_ref": generate_readable_string(READABLE_STRING_LENGTH),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_cancelled_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "event": "cancelled",
+        "subscription_id": str(uuid4()),
+        "merchant_subscription_ref": generate_readable_string(READABLE_STRING_LENGTH),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_unknown_event_payload(**overrides: Any) -> Dict[str, Any]:
+    """An event of a kind the SDK does not know, with a few fields of its own."""
+    payload: Dict[str, Any] = {
+        "event": "evt_" + generate_readable_string(8).lower(),
+        "subscription_id": str(uuid4()),
+        generate_readable_string(8): generate_readable_string(8),
+    }
+    payload.update(overrides)
+    return payload
 
 
 # ---------------------------------------------------------------------------
