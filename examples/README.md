@@ -73,6 +73,27 @@ into `COMPANY_ID` and `API_KEY`.
 - Reading subscription webhooks and the failed-registration notification from the raw request body
 - Turning the errors of the SDK into HTTP answers
 
+### 4. Managing subscriptions (`subscription_management_example.py`)
+
+A small back office (FastAPI) for the subscriptions you have created: it lists them page by page (with a status filter and
+a text search), shows one with its card, charges and journal, and pauses, resumes or cancels it. It turns the errors of
+the SDK into HTTP answers, including the case where the network fails in the middle of a change.
+
+**Run:**
+```bash
+pip install polako-finance fastapi uvicorn
+uvicorn subscription_management_example:app --port 8001
+curl "http://localhost:8001/subscriptions?status=active&limit=20"
+```
+
+Put your company ID and the API key of your platform into `COMPANY_ID` and `API_KEY`, as for the subscription example.
+This server can cancel your customers' subscriptions, so keep it behind your own sign-in.
+
+**Key features:**
+- Listing with a filter, a search and paging
+- Reading one subscription, with the `payment_session_id` of every charge (what `refund_session` needs)
+- Pausing, resuming and cancelling, and what each refusal means
+- Not repeating a change after a network failure: read the subscription first
 ## Configuration
 
 Before running the examples, update the following values:

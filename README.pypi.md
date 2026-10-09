@@ -273,8 +273,9 @@ it is `False` for them, because anyone who knows your URL could send such a noti
 | Exception | HTTP status | Meaning |
 |-----------|-------------|---------|
 | `UnauthorizedError` | 401 | The API key is missing or unknown |
-| `ForbiddenError` | 403 | The API key belongs to another company |
-| `ConflictError` | 409 | Subscriptions are switched off for your company, or the customer already has a live subscription with this reference |
+| `ForbiddenError` | 403 | The API key belongs to another company, or the subscription does |
+| `NotFoundError` | 404 | There is no such subscription |
+| `ConflictError` | 409 | Subscriptions are switched off for your company, the customer already has a live subscription with this reference, or the status does not allow the change (resuming an active subscription, say) |
 | `RequestValidationError` | 422 | A field was rejected, for example a currency that is not allowed |
 | `RateLimitedError` | 429 | Too many requests; `retry_after` is the number of seconds to wait |
 | `ServerError` | 5xx | The gateway or the card processor failed |
@@ -285,8 +286,111 @@ invalid argument is a `ValueError` before any request.
 
 ### Managing a subscription
 
-For now pausing, resuming and cancelling a subscription are done in the dashboard. When a subscription is cancelled
-there, your webhook receives `SubscriptionCancelled`.
+Read and manage the subscriptions of your company with the same client and API key you create them with. The SDK sends
+each of these calls once and does not repeat it, see "A change that did not get an answer" below.
+
+```python
+from uuid import UUID
+
+from polako.sdk import PolakoClient, SubscriptionStatus
+
+COMPANY_ID = UUID("00000000-0000-0000-0000-000000000000")  # your company ID
+API_KEY = "your-secret-key"  # the API key of your platform
+
+
+async def show_active_subscriptions():
+    async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
+        page = await client.list_subscriptions(status=SubscriptionStatus.ACTIVE, limit=20)
+        print(f"{page.total} active, showing {len(page.items)}")
+        for subscription in page.items:
+            print(subscription.id, subscription.customer_email, subscription.amount, subscription.next_charge_at)
+
+        if page.items:
+            details = await client.get_subscription(page.items[0].id)
+            print(details.status, details.saved_card.masked_pan if details.saved_card else "no card")
+            for charge in details.charge_history:
+                print(charge.charge_date, charge.status, charge.amount, charge.payment_session_id)
+```
+
+- `list_subscriptions` returns a `SubscriptionPage`: `items` (a tuple of `SubscriptionSummary`), `total` (how many match in
+  all), `limit` (the page size) and `offset`. It takes these arguments, all optional and all by keyword:
+
+  | Argument | Meaning |
+  |----------|---------|
+  | `status` | One `SubscriptionStatus` (or its text), or several; a subscription matches any of them |
+  | `billing_interval` | One `BillingInterval` (or its text), or several |
+  | `search` | Text looked for in the customer's email, in your `merchant_subscription_ref` and in the subscription ID, ignoring case |
+  | `created_from`, `created_to` | A `date` (the whole day) or a `datetime` with a timezone (to the second); both ends are included |
+  | `sort_by`, `sort_order` | `created_at` (the default), `next_charge_at`, `last_charged_at`, `amount` or `status`; `asc` or `desc` (the default, newest first) |
+  | `limit`, `offset` | 1 to 100 subscriptions per page (10 by default); how many matching subscriptions to skip |
+
+- `get_subscription` returns a `SubscriptionDetails`: the customer, the card (only its masked number, brand and expiry,
+  never the card data itself), `next_charge_at` and `last_charged_at`, `charge_history` (newest first, each charge with its
+  `status`, `amount` and the `payment_session_id` you pass to `refund_session` to return it) and `events` (the journal,
+  oldest first). The ID is a `UUID` or a string holding one.
+- Reading works even when subscriptions are switched off for your company.
+- A time is a timezone-aware `datetime`, an amount a `Decimal`. A status the SDK does not know yet is returned as its text
+  instead of a `SubscriptionStatus`.
+
+To read every subscription, ask for the next page until you have them all:
+
+```python
+async def read_all_subscriptions(client):
+    subscriptions = []
+    while True:
+        page = await client.list_subscriptions(limit=100, offset=len(subscriptions))
+        subscriptions.extend(page.items)
+        if not page.items or len(subscriptions) >= page.total:
+            return subscriptions
+```
+
+A subscription is in one of these statuses (`SubscriptionStatus`):
+
+| Status | Meaning |
+|--------|---------|
+| `pending_registration` | The customer has not finished the card registration yet |
+| `registration_failed` | The card registration failed; the subscription is over |
+| `active` | Charged on schedule |
+| `past_due` | The last charge failed and is being retried |
+| `paused` | Suspended; nothing is charged |
+| `cancelled` | Over; nothing more is charged |
+
+Three calls change a subscription. Each returns nothing when it worked:
+
+| Call | Works when the subscription is | Then |
+|------|-------------------------------|------|
+| `pause_subscription(subscription_id)` | `active` | `paused`: no charges until you resume it; the next charge date is kept |
+| `resume_subscription(subscription_id)` | `paused` | `active` again; a charge that came due during the pause is attempted soon after |
+| `cancel_subscription(subscription_id)` | `active`, `paused` or `past_due` | `cancelled` for good, and your webhook receives `SubscriptionCancelled`; the card is released unless another live subscription uses it |
+
+Cancelling does not return money that was already charged: refund a charge with `refund_session`, using the
+`payment_session_id` from the charge history.
+
+```python
+from polako.sdk import ConflictError, HttpClientError, HttpRequestError, NotFoundError, PolakoClient
+
+
+async def pause_subscription_of(subscription_id):
+    async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
+        try:
+            await client.pause_subscription(subscription_id)
+        except NotFoundError:
+            print("There is no such subscription")
+        except ConflictError as error:
+            # Not active (already paused or cancelled, say), or subscriptions are switched off for your company.
+            print(f"It cannot be paused: {error.response_body}")
+        except HttpRequestError as error:
+            print(f"The gateway refused: status {error.status_code}")
+        except HttpClientError:
+            # The request may or may not have arrived. Look before you try again.
+            details = await client.get_subscription(subscription_id)
+            print(f"The subscription is {details.status}")
+```
+
+**A change that did not get an answer.** If the network fails while a change is on its way, the SDK raises
+`HttpClientError` and cannot tell whether the change was made. It does not repeat the call, because the repeat would find
+the subscription already changed and be refused with a `ConflictError`, which looks the same as a real refusal. Read the
+subscription with `get_subscription` and repeat the change only if it did not happen.
 
 ## Configuration
 
@@ -346,7 +450,7 @@ except Exception as e:
 ```
 
 Beyond `HttpRequestError`, the SDK raises a class of its own for the statuses you will want to handle separately:
-`UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422),
+`UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409), `RequestValidationError` (422),
 `RateLimitedError` (429, with `retry_after`) and `ServerError` (5xx). All of them are subclasses of `HttpRequestError`, so
 the code above keeps working. See [Subscriptions](#subscriptions) for what they mean there.
 
@@ -419,6 +523,9 @@ Async client for Polako Finance API.
 - `async refund_session(session_id, platform_id, secret_key, reason, refund_items=None)` - Full or partial refund
 - `parse_payment_callback(payload, secret_key)` - Parse payment callback (static method)
 - `async create_subscription(*, customer_email, amount, currency, billing_interval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key=None)` - Create a subscription (the client needs `company_id` and `api_key`)
+- `async list_subscriptions(*, status=None, billing_interval=None, search=None, created_from=None, created_to=None, sort_by=None, sort_order=None, limit=10, offset=0)` - One page of the subscriptions of your company
+- `async get_subscription(subscription_id)` - One subscription with its customer, card, charge history and journal
+- `async pause_subscription(subscription_id)`, `async resume_subscription(subscription_id)`, `async cancel_subscription(subscription_id)` - Change a subscription
 
 #### Functions
 
@@ -453,6 +560,9 @@ async with PolakoClient() as client:
 - `FormPost`, `HppFormPost`, `RedirectForm` - The three kinds of registration form
 - `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled`, `UnknownSubscriptionEvent` - Subscription webhook events (type alias `SubscriptionWebhookEvent`)
 - `RegistrationFailed` - A failed card registration
+- `SubscriptionPage`, `SubscriptionSummary`, `SubscriptionDetails` - Result of `list_subscriptions` and `get_subscription`
+- `SubscriptionCustomer`, `SavedCard`, `ChargeAttempt`, `SubscriptionEvent` - The parts of a `SubscriptionDetails`
+- `SubscriptionStatus`, `ChargeAttemptStatus` - Status of a subscription and of one of its charges
 
 ## Support
 
