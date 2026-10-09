@@ -1,6 +1,6 @@
 {
   "README.md::Quick Start::0": {
-    "hash": "96951d2ae0a12539",
+    "hash": "78350777d2377960",
     "check": "static"
   },
   "README.md::Payment Callback Handling::0": {
@@ -40,7 +40,7 @@
     "check": "static"
   },
   "README.md::Custom Customer Address::0": {
-    "hash": "ad9b38c08965abbf",
+    "hash": "d2d94f99eda8a78e",
     "check": "static"
   },
   "README.md::Multiple Items in Order::0": {
@@ -52,7 +52,7 @@
     "check": "static"
   },
   "README.pypi.md::Quick Start::0": {
-    "hash": "96951d2ae0a12539",
+    "hash": "78350777d2377960",
     "check": "static"
   },
   "README.pypi.md::Payment Callback Handling::0": {
@@ -92,7 +92,7 @@
     "check": "static"
   },
   "README.pypi.md::Custom Customer Address::0": {
-    "hash": "ad9b38c08965abbf",
+    "hash": "d2d94f99eda8a78e",
     "check": "static"
   },
   "README.pypi.md::Multiple Items in Order::0": {
@@ -124,7 +124,7 @@
     "check": "static"
   },
   "examples/example.py::file::0": {
-    "hash": "4aa18414ad2b9342",
+    "hash": "30d331dfd11b50f9",
     "check": "static"
   },
   "examples/subscription_example.py::file::0": {

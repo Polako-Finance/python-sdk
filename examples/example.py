@@ -43,7 +43,7 @@ async def create_payment_session():
                 city="Belgrade",
                 state="Central Serbia",
                 zip="11000",
-                country="Serbia",
+                country="RS",
             ),
         )
 

@@ -103,7 +103,7 @@ class CustomerAddress(Serializable):
         city: City name
         state: State or province
         zip: Postal/ZIP code
-        country: Country name or code
+        country: Two-letter country code, e.g. ``RS`` for Serbia
     """
 
     address: Optional[str]

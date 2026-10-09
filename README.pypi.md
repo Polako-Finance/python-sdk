@@ -77,7 +77,7 @@ async def create_payment():
                 city="Belgrade",
                 state="Central Serbia",
                 zip="11000",
-                country="Serbia"
+                country="RS"
             )
         )
         
@@ -471,7 +471,7 @@ customer = CustomerInfo(
         city="Belgrade",
         state="Central Serbia",
         zip="11000",
-        country="Serbia"
+        country="RS"
     )
 )
 ```

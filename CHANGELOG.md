@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - An HTTP 404 is now raised as `NotFoundError`. It is a subclass of `HttpRequestError`, so `except HttpRequestError` code keeps working; only code that tests the exact class of a 404 error is affected.
 ### Fixed
+- The README (Quick Start and Custom Customer Address) and `examples/example.py` gave the customer's country as "Serbia", which the gateway rejects with HTTP 422: it takes a two-letter country code. They now use "RS", and the `CustomerAddress` documentation says so. The examples were checked against a running gateway.
 - `create_order()` without an explicit `language` now always defaults to Serbian (`sr`). Previously the default was picked from an unordered set and could be `sr`, `en` or `ru` between interpreter runs.
 
 ## [0.1.9] - 2026-06-01
