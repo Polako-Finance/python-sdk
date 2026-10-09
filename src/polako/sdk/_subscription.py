@@ -124,7 +124,10 @@ class SubscribeRequest(Serializable):
         if not isinstance(self.amount, Decimal) or not self.amount.is_finite() or self.amount <= 0:
             raise ValueError("'amount' must be a finite Decimal greater than zero")
         if _decimal_places(self.amount) > 2:
-            raise ValueError("'amount' must have at most two decimal places: the server keeps cents and would round the rest")
+            raise ValueError(
+                f"'amount' must have at most two decimal places, got {self.amount}: the server keeps cents, "
+                "so round the amount to cents yourself first"
+            )
 
         if not isinstance(self.currency, str) or not self.currency:
             raise ValueError("'currency' is required")

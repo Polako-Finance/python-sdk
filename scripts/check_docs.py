@@ -38,6 +38,8 @@ CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunct
 
 
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
+HEADING = re.compile(r"#{1,6} ")
 
 
 def extract_blocks(path: Path) -> List[Tuple[str, str]]:
@@ -46,20 +48,41 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
 
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
-    fence may be indented (a block inside a list); its code is then dedented by the indent of the opening fence. A line of
-    backticks followed by text that holds backticks (``` `x` ``` in a sentence) is inline code, not a fence.
+    fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
+    that holds backticks (``` `x` ``` in a sentence) is inline code, not a fence.
+
+    As in CommonMark, a fence indented by four columns or more is a fence only inside a list item (then its code is dedented
+    by the indent of the opening fence); anywhere else it is an indented code block and is not looked at. A list lasts
+    until a heading or a paragraph that is not indented and comes after a blank line.
+
+    Raises:
+        ValueError: If a fenced block is never closed
     """
     blocks: List[Tuple[str, str]] = []
     heading, counter = "", {}
-    fence, current = None, []  # fence: (character, length, is_python, indent) while inside a fenced block
-    for line in path.read_text(encoding="utf-8").splitlines():
+    fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent) inside a fenced block
+    in_list, after_blank = False, False
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if fence is None:
             opening = FENCE.match(line)
-            if opening and not (opening["marker"][0] == "`" and "`" in opening["info"]):
+            inline = opening and opening["marker"][0] == "`" and "`" in opening["info"]
+            if opening and not inline and (len(opening["indent"].expandtabs(4)) < 4 or in_list):
                 marker, language = opening["marker"], opening["info"].strip()
-                fence, current = (marker[0], len(marker), language.startswith("python"), opening["indent"]), []
-            elif re.match(r"#{1,6} ", line):
-                heading = line.lstrip("# ").strip()
+                fence, current, opened_at = (
+                    (marker[0], len(marker), language.startswith("python"), opening["indent"]),
+                    [],
+                    number,
+                )
+            elif HEADING.match(line):
+                heading, in_list = line.lstrip("# ").strip(), False
+            elif LIST_ITEM.match(line):
+                in_list = True
+            elif line.strip() and not line[0].isspace() and after_blank:
+                in_list = False
+            if line.strip() or fence is not None:
+                after_blank = False
+            else:
+                after_blank = True
             continue
         character, length, is_python, indent = fence
         if re.match(rf"^[ \t]*{re.escape(character)}{{{length},}}\s*$", line):
@@ -70,6 +93,8 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
             fence = None
         elif is_python:
             current.append(line[len(indent) :] if line.startswith(indent) else line.lstrip())
+    if fence is not None:
+        raise ValueError(f"{path.name}: the block opened at line {opened_at} is never closed")
     return blocks
 
 
@@ -130,7 +155,12 @@ def current_blocks() -> Dict[str, str]:
 
 
 def verify() -> int:
-    manifest, blocks, problems = load_manifest(), current_blocks(), []
+    manifest, problems = load_manifest(), []
+    try:
+        blocks = current_blocks()
+    except ValueError as e:
+        print(f"BROKEN DOC     {e}")
+        return 1
     for key, code in blocks.items():
         entry = manifest.get(key)
         if entry is None:

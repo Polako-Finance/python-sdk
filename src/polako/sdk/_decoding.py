@@ -47,7 +47,14 @@ def read_money(value: Any) -> Decimal:
 
 
 _MOMENT = re.compile(
-    r"(?P<day>\d{4}-\d{2}-\d{2})[T ](?P<clock>\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<zone>Z|[+-]\d{2}(?::?\d{2})?)?"
+    r"""
+    (?P<day>[0-9]{4}-[0-9]{2}-[0-9]{2})
+    [T ]
+    (?P<minutes>[0-9]{2}:[0-9]{2})
+    (?::(?P<seconds>[0-9]{2})(?:\.(?P<fraction>[0-9]+))?)?
+    (?P<zone>Z|[+-][0-9]{2}(?::?[0-9]{2})?)?
+    """,
+    re.VERBOSE,
 )
 
 
@@ -56,8 +63,9 @@ def parse_moment(text: str) -> datetime:
     A time as ISO 8601 text, always timezone-aware. The one reader of every time the SDK gets from the server.
 
     It reads what Python 3.10's ``fromisoformat`` does not: a trailing ``Z``, an offset written ``+02``, ``+0200`` or
-    ``+02:00``, and a fraction of any number of digits (kept to the microsecond). A time without a zone is UTC. A date with
-    no time of day is not a time and is refused.
+    ``+02:00``, and a fraction of any number of digits (kept to the microsecond: digits beyond the sixth are cut off, not
+    rounded). The seconds may be left out (``10:20``). A time without a zone is UTC. A date with no time of day is not a
+    time and is refused. Only the digits 0-9 count as digits.
 
     Raises:
         ValueError: If the text is not a time
@@ -72,7 +80,7 @@ def parse_moment(text: str) -> datetime:
         digits = zone[1:].replace(":", "")
         offset = f"{zone[0]}{digits[:2]}:{digits[2:] or '00'}"
     fraction = (match["fraction"] or "")[:6].ljust(6, "0")
-    return datetime.fromisoformat(f"{match['day']}T{match['clock']}.{fraction}{offset}")
+    return datetime.fromisoformat(f"{match['day']}T{match['minutes']}:{match['seconds'] or '00'}.{fraction}{offset}")
 
 
 def read_moment(value: Any) -> datetime:

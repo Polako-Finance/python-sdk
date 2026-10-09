@@ -183,6 +183,17 @@ def test_invalid_request_is_rejected(overrides, message):
         make_subscribe_request(**overrides).validate()
 
 
+def test_the_error_for_too_many_decimal_places_says_to_round_first_and_names_the_amount():
+    amount = generate_random_decimal(3, 2) + Decimal("0.005")
+
+    with pytest.raises(ValueError) as exc:
+        make_subscribe_request(amount=amount).validate()
+
+    message = str(exc.value)
+    assert "round" in message
+    assert str(amount) in message
+
+
 @pytest.mark.parametrize(
     "amount",
     [

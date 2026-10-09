@@ -44,9 +44,10 @@ def render_registration_form(form: RegistrationForm, *, auto_submit: bool = True
 
     Args:
         form: The ``registration_form`` of the ``SubscriptionCreated`` returned by ``create_subscription``
-        auto_submit: Send the customer on at once (default). Posted forms do it with one small script and show a button
-            when scripts are off; if your site forbids inline scripts, pass False and the customer presses the button.
-            A redirect does it with a ``refresh`` header of the page and always shows a link.
+        auto_submit: Send the customer on at once (default). Posted forms do it with one small script and always show a
+            button too, so a customer whose browser or whose page policy blocks the script presses it. If your site
+            forbids inline scripts, pass False: the page then holds no script at all. A redirect does it with a
+            ``refresh`` header of the page and always shows a link.
 
     Raises:
         TypeError: If ``form`` is not a registration form
@@ -87,10 +88,11 @@ def _checked_address(action: Any) -> str:
 def _form_page(action: str, fields: List[Any], auto_submit: bool) -> str:
     target = _checked_address(action)
     inputs = "".join(f'<input type="hidden" name="{_escape(name)}" value="{_escape(value)}">\n' for name, value in fields)
+    # Always visible, never inside <noscript>: a page policy that blocks the inline script leaves scripting on, and then
+    # a <noscript> button would not show and the customer would be stuck on this page.
     button = '<button type="submit">Continue</button>'
     script = ""
     if auto_submit:
-        button = f"<noscript>{button}</noscript>"
         # The method of the element type itself: a provider field named "submit" would shadow the form's own.
         script = f'<script>HTMLFormElement.prototype.submit.call(document.getElementById("{FORM_ID}"));</script>\n'
     body = (

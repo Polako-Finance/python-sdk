@@ -194,7 +194,9 @@ class PaymentCallback:
         success: Whether payment was successful
         tx_id: Transaction identifier
         tx_meta: Additional transaction metadata
-        datetime: Payment timestamp
+        datetime: Payment timestamp. Schema 1.1 gives a timezone-aware value (UTC when the gateway sends no zone). The
+            legacy format carries only the minute and no zone, so its value is naive: do not compare the two kinds with
+            each other or with an aware time without handling that
         callback_type: Callback type — "payment" or "refund" (schema 1.1 only)
         session_id: Payment session UUID (schema 1.1 only)
         schema_version: Callback schema version — None for legacy, "1.1" for signed

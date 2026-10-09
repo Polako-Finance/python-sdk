@@ -335,8 +335,10 @@ class AsyncPolakoClient:
 
         Pass your own ``idempotency_key`` (a UUID is recommended) and store it before the call: sending the same
         request again with the same key returns the same subscription instead of creating a second one. Without
-        it a key is generated and returned in the result. A failed attempt (network error, HTTP 429 or 5xx) is
-        retried up to 3 times with the same key. The endpoint accepts 20 requests per 60 seconds.
+        it a key is generated and returned in the result. A failed attempt (a network error or timeout, or HTTP 429,
+        500, 502, 503 or 504) is repeated with the same key, up to 3 attempts in all, so with the default 30 s timeout a
+        call can take about 100 s before it gives up (there is no overall deadline). The endpoint accepts 20 requests
+        per 60 seconds, and every attempt counts against that limit.
 
         Args:
             customer_email: Email of the customer

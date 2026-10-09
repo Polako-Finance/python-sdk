@@ -188,15 +188,19 @@ async def subscribe():
 - The subscription becomes active only after the customer completes the registration. A failure is reported to your
   error URL; every later charge is reported to your webhook URL.
 - Repeating a request with the same `idempotency_key` returns the same subscription. A request that fails on the
-  network, or with HTTP 429, 500, 502, 503 or 504, is repeated for you, up to three attempts, with the same key.
-- The endpoint accepts 20 requests per 60 seconds. Beyond that you get a `RateLimitedError` with `retry_after` set.
+  network (a timeout included), or with HTTP 429, 500, 502, 503 or 504, is repeated for you, up to three attempts, with the
+  same key. There is no overall deadline: with the default 30 second timeout a call that keeps failing can take about
+  100 seconds before it raises.
+- The endpoint accepts 20 requests per 60 seconds, and every attempt counts. Beyond that you get a `RateLimitedError` with
+  `retry_after` set.
 - `amount` has at most two decimal places (`990.00`): the gateway keeps cents, so a third decimal is refused with a `ValueError`
-  instead of being rounded.
+  instead of being rounded; round the amount to cents yourself first.
 - `merchant_subscription_ref` is your own reference to the plan or product (1 to 128 characters). A customer can have
   one live subscription per reference; a second one is a `ConflictError`.
 - `render_registration_form` returns a complete HTML page: a form that posts the customer to the card processor, or a
   redirect, depending on the processor. Return it as an HTML response. It sends the customer on at once with one small
-  script; pass `auto_submit=False` if your site forbids inline scripts, and the customer presses a button instead.
+  script and always shows a "Continue" button as well, for a browser or a page policy that blocks the script. Pass
+  `auto_submit=False` if your site forbids inline scripts: the page then holds no script and the customer presses the button.
 
 ### Read the webhooks
 

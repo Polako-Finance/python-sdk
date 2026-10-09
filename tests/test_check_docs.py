@@ -90,7 +90,7 @@ def test_a_block_inside_a_list_is_found_and_dedented(check_docs, monkeypatch, tm
 
 
 def test_an_indented_block_is_closed_by_a_fence_with_any_indent(check_docs, monkeypatch, tmp_path):
-    markdown = "## Setup\n\n    ```python\n    x = 1\n```\n\n```python\ny = 2\n```\n"
+    markdown = "## Setup\n\n- Step\n\n    ```python\n    x = 1\n```\n\n```python\ny = 2\n```\n"
 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1"), ("Setup::1", "y = 2")]
 
@@ -101,8 +101,50 @@ def test_a_real_heading_after_a_block_still_counts(check_docs, monkeypatch, tmp_
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Two::0", "x = 1")]
 
 
-def test_a_block_that_is_never_closed_is_not_a_block(check_docs, monkeypatch, tmp_path):
-    assert blocks_of(check_docs, monkeypatch, tmp_path, "## Setup\n\n```python\nx = 1\n") == []
+@pytest.mark.parametrize("language", ["python", "bash", ""])
+def test_a_block_that_is_never_closed_is_an_error_naming_its_line(check_docs, monkeypatch, tmp_path, language):
+    """It would swallow the rest of the file, so the blocks after it would silently go unchecked."""
+    with pytest.raises(ValueError, match=r"line 3\b.*never closed"):
+        blocks_of(check_docs, monkeypatch, tmp_path, f"## Setup\n\n```{language}\nx = 1\n\n```python\ny = 2\n~~~\n")
+
+
+def test_the_check_fails_on_a_block_that_is_never_closed(check_docs, monkeypatch, tmp_path, capsys):
+    (tmp_path / "doc.md").write_text("## Setup\n\n```python\nx = 1\n", encoding="utf-8")
+    monkeypatch.setattr(check_docs, "ROOT", tmp_path)
+    monkeypatch.setattr(check_docs, "DOCS", ["doc.md"])
+    monkeypatch.setattr(check_docs, "MANIFEST", tmp_path / "manifest.json")
+
+    assert check_docs.verify() == 1
+    assert "never closed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("indent", ["    ", "      ", "\t"])
+def test_an_indented_fence_outside_a_list_is_an_indented_code_block_and_not_a_fence(
+    check_docs, monkeypatch, tmp_path, indent
+):
+    body = f"{indent}```python\n{indent}x = 1\n{indent}```\n"
+    markdown = f"## Setup\n\nA paragraph.\n\n{body}\n```python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "y = 2")]
+
+
+@pytest.mark.parametrize("marker", ["-", "*", "+", "1.", "12)"])
+def test_a_fence_in_a_list_item_is_a_fence_across_blank_lines_and_nested_text(check_docs, monkeypatch, tmp_path, marker):
+    markdown = f"## Setup\n\n{marker} First step\n\n    More text of the item.\n\n    ```python\n    x = 1\n    ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1")]
+
+
+def test_a_fence_after_the_list_has_ended_is_not_a_fence(check_docs, monkeypatch, tmp_path):
+    markdown = "## Setup\n\n- An item\n\nA paragraph ends the list.\n\n    ```python\n    x = 1\n    ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == []
+
+
+def test_a_heading_ends_a_list(check_docs, monkeypatch, tmp_path):
+    markdown = "- An item\n\n## Next\n\n    ```python\n    x = 1\n    ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == []
 
 
 def test_the_documentation_of_this_repository_names_its_blocks_by_real_headings(check_docs):

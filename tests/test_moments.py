@@ -65,6 +65,38 @@ def test_a_time_without_a_zone_is_utc_and_so_is_always_aware():
     assert read == naive.replace(tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("suffix", ["Z", "+02:00", "+0200", "+02", ""])
+def test_a_time_with_no_seconds_is_read_as_whole_minutes(suffix):
+    moment = generate_aware_datetime().astimezone(timezone.utc).replace(second=0, microsecond=0)
+    offset = timedelta(hours=2) if suffix.startswith("+") else timedelta(0)
+
+    read = parse_moment((moment + offset).strftime("%Y-%m-%dT%H:%M") + suffix)
+
+    assert read == moment
+
+
+def test_a_webhook_whose_charge_time_has_no_seconds_is_read():
+    key = generate_api_key()
+    moment = generate_aware_datetime().astimezone(timezone.utc).replace(second=0, microsecond=0)
+    body, signature = make_signed_webhook(make_charge_succeeded_payload(charged_at=moment.strftime("%Y-%m-%dT%H:%M")), key)
+
+    assert parse_subscription_webhook(body, signature, key).charged_at == moment
+
+
+@pytest.mark.parametrize("text", ["2026-03-05T10:20.5Z", "2026-03-05T10.5Z"])
+def test_a_fraction_belongs_to_the_seconds_only(text):
+    with pytest.raises(ValueError, match="not an ISO 8601 time"):
+        parse_moment(text)
+
+
+def test_digits_of_other_scripts_are_not_digits_of_a_time():
+    """Python reads them as digits, so the error must still be the plain "not a time" and not a confusing one."""
+    arabic = "".join(chr(0x0660 + int(c)) if c.isdigit() else c for c in "2026-03-05T10:20:30Z")
+
+    with pytest.raises(ValueError, match="not an ISO 8601 time"):
+        parse_moment(arabic)
+
+
 def test_a_space_may_separate_the_day_from_the_time():
     assert parse_moment("2026-03-05 10:20:30Z") == datetime(2026, 3, 5, 10, 20, 30, tzinfo=timezone.utc)
 

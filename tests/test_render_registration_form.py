@@ -160,12 +160,14 @@ def test_a_redirect_form_redirects_on_its_own_when_asked_to():
 
 
 @pytest.mark.parametrize("make_response", [make_form_post_response, make_hpp_form_response])
-def test_a_posted_form_submits_itself_and_has_a_button_when_scripts_are_off(make_response):
+def test_a_posted_form_submits_itself_and_always_shows_a_button(make_response):
+    """The button is not inside <noscript>: a page policy that blocks the inline script leaves scripting on, so a
+    <noscript> button would never show and the customer would be stuck."""
     result = page(form_of(make_response), auto_submit=True)
 
     assert len(result.scripts) == 1
     assert result.forms[0]["id"] in result.scripts[0] and "HTMLFormElement.prototype.submit.call(" in result.scripts[0]
-    assert result.buttons == [(True, "submit")]
+    assert result.buttons == [(False, "submit")]
 
 
 FORM_PROPERTY_NAMES = ["submit", "action", "method", "id", "name", "target", "elements", "length"]
