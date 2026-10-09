@@ -119,9 +119,7 @@ def test_the_check_fails_on_a_block_that_is_never_closed(check_docs, monkeypatch
 
 
 @pytest.mark.parametrize("indent", ["    ", "      ", "\t"])
-def test_an_indented_fence_outside_a_list_is_an_indented_code_block_and_not_a_fence(
-    check_docs, monkeypatch, tmp_path, indent
-):
+def test_an_indented_fence_outside_a_list_is_an_indented_code_block_and_not_a_fence(check_docs, monkeypatch, tmp_path, indent):
     body = f"{indent}```python\n{indent}x = 1\n{indent}```\n"
     markdown = f"## Setup\n\nA paragraph.\n\n{body}\n```python\ny = 2\n```\n"
 
