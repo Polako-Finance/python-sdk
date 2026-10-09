@@ -58,6 +58,10 @@ class ForbiddenError(HttpRequestError):
     """HTTP 403: the credentials are valid but do not allow this operation (e.g. a key of another company)."""
 
 
+class NotFoundError(HttpRequestError):
+    """HTTP 404: there is no such resource (e.g. a subscription id the company does not know)."""
+
+
 class ConflictError(HttpRequestError):
     """HTTP 409: the request conflicts with the current state (e.g. a duplicate subscription, a feature that is off)."""
 
@@ -87,6 +91,7 @@ class ServerError(HttpRequestError):
 _ERRORS_BY_STATUS: Dict[int, Type[HttpRequestError]] = {
     401: UnauthorizedError,
     403: ForbiddenError,
+    404: NotFoundError,
     409: ConflictError,
     422: RequestValidationError,
     429: RateLimitedError,

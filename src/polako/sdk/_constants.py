@@ -27,6 +27,25 @@ class BillingInterval(str, Enum):
     YEARLY = "yearly"
 
 
+class SubscriptionStatus(str, Enum):
+    """Where a subscription is in its life; terminal states are `REGISTRATION_FAILED` and `CANCELLED`."""
+
+    PENDING_REGISTRATION = "pending_registration"  # the customer has not finished the card registration (3DS)
+    REGISTRATION_FAILED = "registration_failed"  # the card registration failed
+    ACTIVE = "active"  # charged on schedule
+    PAST_DUE = "past_due"  # the last charge failed and is being retried
+    PAUSED = "paused"  # suspended, no charges
+    CANCELLED = "cancelled"  # ended, no further charges
+
+
+class ChargeAttemptStatus(str, Enum):
+    """The outcome of one scheduled charge."""
+
+    PENDING = "pending"  # sent to the card processor, no final answer yet
+    SUCCEEDED = "succeeded"  # the money was taken
+    FAILED = "failed"  # declined or errored; retries, if any, are the server's
+
+
 # API base URLs
 BASE_URL_PROD = "https://api.infra.polako-finance.com"
 BASE_URL_TEST = "https://stg-api.infra.polako-finance.com"

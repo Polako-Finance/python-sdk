@@ -1,10 +1,10 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.12** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+**Status: DRAFT v0.13** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
 gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
 `parse_registration_failed` and `render_registration_form`, plus the README section and the example. Scope: **creating a subscription, full cycle**
-(create, render the 3DS form, receive webhooks). Subscription management comes next: the server routes that accept the platform API key are built and wait for a release
-(see Planned).
+(create, render the 3DS form, receive webhooks). Subscription management (read, list, pause, resume, cancel) is agreed in v0.13 and is being built, against the server
+routes that accept the platform API key (see Subscription management).
 
 ## How to use this document
 
@@ -21,9 +21,11 @@ Any deviation from this file is a spec change: edit the file, add a change-log r
 
 In: authentication of the create call, `create_subscription`, models for the request, the response and the three
 registration forms, form rendering helper, webhook parsers (four lifecycle events and the registration-failed
-notification), exceptions by HTTP status, retries for keyed requests.
+notification), exceptions by HTTP status, retries for keyed requests. Agreed in v0.13, not built yet: management methods
+(`get_subscription`, `list_subscriptions`, `pause_subscription`, `resume_subscription`, `cancel_subscription`), their
+models and enums, `NotFoundError`.
 
-Out: management methods (detail, list, pause, resume, cancel; waiting for the server release, see Planned), retries for payment methods,
+Out: retries of management methods (decision `management-no-retry`), retries for payment methods,
 unification of the two signature schemes, `SubscriptionStatus` / `ChargeAttemptStatus` enums, live checks on production,
 a public `verify_webhook_signature` (see Decisions).
 
@@ -77,7 +79,12 @@ tests. A change to the flow is made in this spec first, then in the example and 
 | Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed`: `subscription_id` (a `UUID`), `merchant_subscription_ref`, `error_message`, `provider_name` (each may be `None` but the id), `signature_verified`; immutable. The model states that it has no event (`event = None`, unlike every lifecycle event) and that `success = 0`; `order_id` is not kept because it always equals `subscription_id` |
-| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` (a `WebhookSignatureError`), `WebhookPayloadError` (a `ValueError`: the signed body is not JSON, not an object, has no event name, or a field is missing or malformed) |
+| Read | `await get_subscription(subscription_id: UUID \| str) -> SubscriptionDetails` (agreed v0.13, not built) |
+| List | `await list_subscriptions(*, status: Iterable[SubscriptionStatus \| str] \| None = None, billing_interval: Iterable[BillingInterval \| str] \| None = None, search: str \| None = None, created_from: date \| datetime \| None = None, created_to: date \| datetime \| None = None, sort_by: str \| None = None, sort_order: str \| None = None, limit: int = 10, offset: int = 0) -> SubscriptionPage` (agreed v0.13, not built) |
+| Change | `await pause_subscription(subscription_id)`, `await resume_subscription(subscription_id)`, `await cancel_subscription(subscription_id)`, each returns `None` (agreed v0.13, not built) |
+| Management results | `SubscriptionPage`: `items` (a tuple of `SubscriptionSummary`), `total`, `limit`, `offset`. `SubscriptionSummary`: `id`, `customer_id`, `customer_email`, `merchant_subscription_ref`, `amount` (`Decimal`), `currency`, `billing_interval`, `status`, `next_charge_at`, `last_charged_at`, `created_at`. `SubscriptionDetails`: the same fields plus `customer` (`SubscriptionCustomer`: `id`, `external_customer_id`, `email`), `saved_card` (`SavedCard` or `None`: `id`, `masked_pan`, `card_brand`, `pan_expiry`, `status`; never a token), `anchor_at`, `failed_charge_count`, `last_failed_charge_at`, `charge_history` (a tuple of `ChargeAttempt`, newest first: `id`, `charge_date`, `order_id`, `status`, `amount`, `result_code`, `error_class`, `error_message`, `retry_count`, `next_retry_at`, `created_at`, `updated_at`, `payment_session_id`) and `events` (a tuple of `SubscriptionEvent`, oldest first: `id`, `event_type`, `payload`, `created_at`). All immutable (agreed v0.13, not built) |
+| Enums | `SubscriptionStatus` (`pending_registration`, `registration_failed`, `active`, `past_due`, `paused`, `cancelled`) and `ChargeAttemptStatus` (`pending`, `succeeded`, `failed`), both `str` enums, public (agreed v0.13, not built) |
+| Exceptions | `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404, new in v0.13, not built), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx), all subclasses of `HttpRequestError`; `ConfigurationError` (missing `company_id` or `api_key`, a `ValueError`); `UnknownRegistrationFormError` (a `ValueError`; surfaces as the `__cause__` of the `HttpRequestError` the client raises when it cannot read the response); `WebhookSignatureError`, `MissingSignatureError` (a `WebhookSignatureError`), `WebhookPayloadError` (a `ValueError`: the signed body is not JSON, not an object, has no event name, or a field is missing or malformed) |
 
 Behaviour rules:
 - `create_subscription` without `company_id` or `api_key` raises a clear configuration error before any request.
@@ -117,7 +124,25 @@ Behaviour rules:
 - Times with a trailing `Z` are read as UTC on every supported Python version. An unknown event name is returned, not
   raised; unknown fields of a known event are ignored.
 - Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
-  key on every attempt. 4xx other than 429 is never retried. Payment methods are not retried.
+  key on every attempt. 4xx other than 429 is never retried. Payment methods are not retried. Management methods are not
+  retried either (decision `management-no-retry`).
+- Management methods (agreed v0.13) need `company_id` and `api_key` like `create_subscription` and raise `ConfigurationError`
+  before any request otherwise; the key goes in the `company_api_key` header and nothing else is signed. Arguments are checked
+  before any request and raise `ValueError`: `subscription_id` is a `UUID` or a string that is one; `limit` is 1 to 100;
+  `offset` is not negative; `sort_by` is one of `created_at`, `next_charge_at`, `last_charged_at`, `amount`, `status`;
+  `sort_order` is `asc` or `desc`; `search` is not blank when given; `status` and `billing_interval` hold members of the
+  enums or their string values; `created_from` and `created_to` are a `date` or a timezone-aware `datetime` (a naive
+  `datetime` is rejected, not guessed), sent as ISO 8601, both bounds inclusive. `search` is matched by the server against
+  the customer's email, the merchant reference and the id. Several `status` or `billing_interval` values match any of them.
+- Management results are read tolerantly: an unknown value of a known enum field (a status, an interval, a charge status)
+  stays the raw string instead of failing the call, and unknown fields are ignored; a field that is missing or of the wrong
+  type is an `HttpRequestError` whose cause is the decoding error, as for `create_subscription`. Money is a `Decimal`
+  whether the server sends it as a string or a number; times are timezone-aware `datetime` values; `charge_date` is a `date`.
+- `pause_subscription`, `resume_subscription` and `cancel_subscription` answer nothing on success. A status that does not
+  allow the change (pause needs `active`, resume needs `paused`, a cancelled subscription accepts nothing) and subscriptions
+  being switched off for the company are both a `ConflictError`; the message of the server says which. A network error is an
+  `HttpClientError` and the change may or may not have been applied: read the subscription with `get_subscription` before
+  repeating it.
 
 ## Decisions
 
@@ -132,18 +157,23 @@ Behaviour rules:
 | redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect (page with a link and an auto-redirect), not an `<iframe>`; the wire value `iframe` is still accepted. Reason: nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | implemented |
 | management-by-api-key | Merchants manage subscriptions (detail, list, pause, resume, cancel) with the platform API key as well as from the dashboard. One route per operation serves both: a dashboard login is used when the request carries one, otherwise the API key, and a login wins over a key sent beside it. The SDK methods call those routes with `company_api_key`. Decided 2026-10-08, route design 2026-10-09; the server side is built, the SDK methods wait for its release | agreed, waiting for the server release |
 | no-standalone-verify | The signature check is not a public function: `parse_subscription_webhook` and `parse_registration_failed` already verify, and a second entry point would invite reading the body without the checks. A merchant who queues webhooks passes the raw body and the `X-Signature` value to the worker and calls the parser there. Revisit if a real need appears, under a name that cannot be mistaken for the payment callback check | decided |
+| management-no-retry | Management methods are never retried, neither the changes nor the reads. The server takes no `Idempotency-Key` on pause, resume and cancel, and a repeat after a lost response would meet the new status and answer 409, which cannot be told from a real refusal, so a change that worked would look like a failure. The caller reads the subscription and decides. Reads could be retried safely, but the retry rules are shared with the payment methods and are being discussed separately, so they stay as they are. Revisit when the server accepts an `Idempotency-Key` on the changes | decided |
+| management-not-found | A 404 is a `NotFoundError`, a subclass of `HttpRequestError`, so that "no such subscription" is not caught together with every other HTTP failure | agreed |
+| management-one-page | `list_subscriptions` returns one page (`limit`, `offset`) as a `SubscriptionPage`; there is no iterator. One can be added later without changing it | agreed |
+| tolerant-reading | Management results keep an unknown enum value as the raw string and ignore unknown fields, so that a status added by the server does not break a merchant's listing | agreed |
 
 "Assumed" means: agreed as the working choice on 2026-10-08, not built yet, to be confirmed or changed. "Implemented" means the code follows it. Both stay open to change; change it here first.
 
-## Planned: subscription management (server side built, waiting for a release)
+## Subscription management (server routes built; SDK methods agreed in v0.13)
 
 Merchants will manage subscriptions from their own code with the same platform API key, as well as from the dashboard
 (decision `management-by-api-key`). In the released server these operations need a dashboard session. The new server
 code serves the same routes to both kinds of caller: `GET /v1/company/{company_id}/subscriptions` (list), `GET
 .../{subscription_id}` (detail), and `PATCH .../{subscription_id}/pause`, `/resume`, `/cancel` (status 204). A request
 that carries the dashboard's login is treated as a dashboard call; one without it must carry `company_api_key`, which
-must belong to the company in the path. The SDK methods call these routes with `company_api_key`. Until the server is
-released the SDK has no management methods.
+must belong to the company in the path. The SDK methods call these routes with `company_api_key`; their signatures,
+models, errors and rules are in Interface and Behaviour rules above. They are built against the new routes, so they work
+against a server that has them.
 
 What the server answers, for an API key: 401 for a missing or unknown key, 403 for the key of another company or for a
 subscription of another company, 404 for an unknown subscription, 409 when subscriptions are switched off for the company
@@ -153,10 +183,9 @@ authority over its company's subscriptions.
 
 Operations: the detail of a subscription (which carries the charge history and the event journal, so there is no separate
 route for the payments of a subscription), a list with filters, pause, resume and cancel. Cancelling does not refund; a
-refund goes through the payment refund. Method names, signatures, models and errors are agreed here before they are
-written. Requirements already known: a subscription of another company is refused (HTTP 403); an illegal change of status
-must be distinguishable from a network error; reads are not retried without a key, a change that carries an
-`Idempotency-Key` is (the server's management routes do not take one yet, so none is retried until they do).
+refund goes through the payment refund: the `payment_session_id` of a charge in the history is what `refund_session`
+needs. Requirements: a subscription of another company is refused (HTTP 403); an illegal change of status must be
+distinguishable from a network error; none of the management methods is retried (decision `management-no-retry`).
 
 ## Open questions
 
@@ -187,3 +216,4 @@ must be distinguishable from a network error; reads are not retried without a ke
 | 2026-10-08 | v0.10: the open question about `company_id` now records the agreed direction: the dashboard shows it on the Company info page, at the right edge of the header strip next to PIB and MB, read-only and copyable, for every member of the company. Not built yet; the README stays as it is until it is |
 | 2026-10-08 | v0.11: the dashboard shows the company ID on the Company info page, so the open question is closed and moved to a new section, Notes from the dashboard. The README and the examples now say where to find the ID, and that Polako switches subscriptions on for a company (otherwise `ConflictError`) |
 | 2026-10-09 | v0.12: the design of the management routes is settled: one route per operation serves both the dashboard login and the platform API key (a login wins over a key sent beside it), instead of a second external route per operation. Decision `management-by-api-key` and section Planned rewritten with the routes, the answers for an API key and the facts found while building it: no separate payments route (the detail carries the charge history), cancel does not refund, reading is not gated by the switch, the management routes take no `Idempotency-Key` yet. The server side is built and waits for a release, so the SDK methods are still not written |
+| 2026-10-09 | v0.13: the interface of subscription management is agreed: `get_subscription`, `list_subscriptions` (one page, filters, sorting, `limit`/`offset`), `pause_subscription`, `resume_subscription`, `cancel_subscription` (return `None`); the result models (`SubscriptionPage`, `SubscriptionSummary`, `SubscriptionDetails` with `SubscriptionCustomer`, `SavedCard`, `ChargeAttempt`, `SubscriptionEvent`), the public enums `SubscriptionStatus` and `ChargeAttemptStatus`, and `NotFoundError` for 404. New decisions `management-no-retry` (no retries for any management method, the reason being that a repeated change meets its own result as a 409), `management-not-found`, `management-one-page`, `tolerant-reading`. Interface, Behaviour rules, Scope and the management section updated; nothing is built yet |

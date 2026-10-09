@@ -25,7 +25,7 @@ Example:
 """
 
 from polako.sdk._async_api import AsyncPolakoClient as PolakoClient
-from polako.sdk._constants import BillingInterval
+from polako.sdk._constants import BillingInterval, ChargeAttemptStatus, SubscriptionStatus
 from polako.sdk._exceptions import (
     ConfigurationError,
     ConflictError,
@@ -33,6 +33,7 @@ from polako.sdk._exceptions import (
     HttpClientError,
     HttpRequestError,
     MissingSignatureError,
+    NotFoundError,
     RateLimitedError,
     RequestValidationError,
     ServerError,
@@ -110,6 +111,8 @@ __all__ = [
     "ShoppingCart",
     # Subscriptions
     "BillingInterval",
+    "SubscriptionStatus",
+    "ChargeAttemptStatus",
     "FormPost",
     "HppFormPost",
     "RedirectForm",
@@ -134,6 +137,7 @@ __all__ = [
     "HttpRequestError",
     "UnauthorizedError",
     "ForbiddenError",
+    "NotFoundError",
     "ConflictError",
     "RequestValidationError",
     "RateLimitedError",

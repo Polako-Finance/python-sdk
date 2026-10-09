@@ -7,6 +7,7 @@ from polako.sdk import (
     ForbiddenError,
     HttpClientError,
     HttpRequestError,
+    NotFoundError,
     RateLimitedError,
     RequestValidationError,
     ServerError,
@@ -18,6 +19,7 @@ from tests.generators import generate_api_key, generate_random_host, generate_re
 SPECIFIC = [
     (401, UnauthorizedError),
     (403, ForbiddenError),
+    (404, NotFoundError),
     (409, ConflictError),
     (422, RequestValidationError),
     (429, RateLimitedError),
@@ -56,7 +58,7 @@ async def test_specific_errors_stay_catchable_as_the_base_classes(gateway, statu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [400, 404, 410, 418])
+@pytest.mark.parametrize("status", [400, 410, 418])
 async def test_other_statuses_stay_plain_http_request_error(gateway, status):
     with pytest.raises(HttpRequestError) as exc:
         await fetch(gateway, status)
@@ -70,6 +72,7 @@ def test_specific_classes_are_distinct():
         assert issubclass(cls, HttpRequestError)
     assert not issubclass(UnauthorizedError, ForbiddenError)
     assert not issubclass(ConflictError, RequestValidationError)
+    assert not issubclass(NotFoundError, ForbiddenError)
 
 
 @pytest.mark.asyncio
