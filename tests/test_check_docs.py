@@ -381,3 +381,40 @@ def test_a_quote_in_a_nested_list_item_holds_a_block(check_docs, monkeypatch, tm
     markdown = f"## A\n\n{prefix}> ```python\n{pad}> x = 1\n{pad}> >>> y\n{pad}> ```\n\n```python\nz = 3\n```\n"
 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\n>>> y"), ("A::1", "z = 3")]
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "> - > ```python\n>   > x = 1\n>   > ```\n",
+        "> - ```python\n>   x = 1\n>   ```\n",
+        "- > - ```python\n  >   x = 1\n  >   ```\n",
+    ],
+)
+def test_a_quote_and_a_list_nested_in_another_order_stop_the_check_and_do_not_pass_silently(
+    check_docs, monkeypatch, tmp_path, markdown
+):
+    """Known limit: only list markers followed by quote marks are read. The fence is not seen as opened, its closing line
+    is taken for an opening one, and the check fails loudly."""
+    with pytest.raises(ValueError, match="never closed"):
+        blocks_of(check_docs, monkeypatch, tmp_path, "## A\n\n" + markdown)
+
+
+@pytest.mark.parametrize("info", ["{title=don't .python}", "{it's .python}", "{a=don't b=it's .python}"])
+def test_an_apostrophe_that_does_not_start_a_value_is_not_a_quote(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_a_quoted_value_after_an_apostrophe_is_still_a_value(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n```{a=don't .bash b='x .python'}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+@pytest.mark.parametrize("info", ['{title = "a .python b"}', "{title= 'a .python b'}"])
+def test_spaces_around_the_equals_sign_do_not_hide_a_quoted_value(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]

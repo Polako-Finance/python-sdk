@@ -42,7 +42,7 @@ LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
 HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
 QUOTE = re.compile(r"^(?: {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ ]+)*(?: {0,3}>[ ]?)+")
 LANGUAGE = re.compile(r"[A-Za-z0-9]+(?=$|[\s,{:}])")  # the word ends at a space, a comma, a brace or a colon
-ATTRIBUTE_VALUE = re.compile(r"\"[^\"]*(?:\"|$)|'[^']*(?:'|$)")  # a quoted value (an unclosed one runs to the end)
+ATTRIBUTE_VALUE = re.compile(r"=[ ]*(?:\"[^\"]*(?:\"|$)|'[^']*(?:'|$))")  # a quoted value, only after "="; unclosed runs on
 ATTRIBUTE_CLASS = re.compile(r"(?<![^\s{])\.([^\s}]+)")  # ``.python`` in a Pandoc list such as ``{#id .python}``
 INDENT = re.compile(r"[ \t]*")
 PYTHON_LANGUAGES = frozenset({"python", "py", "python3", "py3"})  # ``pycon`` is a console session, not code to run
@@ -98,7 +98,8 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     The language of a fence is the word that opens its info string, in any case: ``python``, ``py``, ``python3``, ``py3``.
     The word ends at a space, a comma, a brace or a colon (``python,ignore``, ``python{1,2}``, ``python:file.py``), so
     ``python-console`` or ``python3.8`` are other languages. A Pandoc list of attributes names the language as any of its
-    classes (``{#x .numberLines .python}``).
+    classes (``{#x .numberLines .python}``). A quoted value of an attribute (``title="a .python b"``) names nothing; a quote
+    mark opens a value only right after ``=``, so an apostrophe inside a bare value (``title=don't``) is just a character.
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
     fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
@@ -111,7 +112,9 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     three spaces. A fence inside a quote (``> ```python``), also one in a list item (``- > ```python``), is read without
     the marks of the quotes that hold it, and no more (``> >>> x`` keeps its prompt); in any other block ``>>>`` is code.
     A quote that ends before the fence does leaves the block never closed (CommonMark would close it there; stopping is
-    the safe way for a check).
+    the safe way for a check). Only list markers followed by quote marks are read (`- > `python`, `10. - > `python`);
+    a quote that holds a list (``> - ```python``) is not seen as a fence, its closing line is taken for an opening one, and
+    the check stops with "never closed" instead of passing anything silently.
 
     Raises:
         ValueError: If a fenced block is never closed
