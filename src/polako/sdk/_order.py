@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from polako.sdk._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
+from polako.sdk._decoding import parse_moment
 from polako.sdk._serializable import Serializable
 
 
@@ -298,7 +299,7 @@ class SignedPaymentCallbackRaw(Serializable):
             success=self.status == "success",
             tx_id=self.event_id,
             tx_meta=self.tx_meta,
-            datetime=datetime.fromisoformat(self.timestamp),
+            datetime=parse_moment(self.timestamp),
             callback_type=self.type,
             session_id=self.session_id,
             schema_version=self.schema,

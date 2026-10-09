@@ -37,7 +37,7 @@ CLIENT = sdk.PolakoClient
 CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunction) if not name.startswith("_")}
 
 
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*(\S*)")
+FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 
 
 def extract_blocks(path: Path) -> List[Tuple[str, str]]:
@@ -45,29 +45,31 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it.
 
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
-    a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it.
+    a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
+    fence may be indented (a block inside a list); its code is then dedented by the indent of the opening fence. A line of
+    backticks followed by text that holds backticks (``` `x` ``` in a sentence) is inline code, not a fence.
     """
     blocks: List[Tuple[str, str]] = []
     heading, counter = "", {}
-    fence, current = None, []  # fence: (character, length, is_python) while inside a fenced block
+    fence, current = None, []  # fence: (character, length, is_python, indent) while inside a fenced block
     for line in path.read_text(encoding="utf-8").splitlines():
         if fence is None:
             opening = FENCE.match(line)
-            if opening:
-                marker = opening.group(1)
-                fence, current = (marker[0], len(marker), opening.group(2).startswith("python")), []
+            if opening and not (opening["marker"][0] == "`" and "`" in opening["info"]):
+                marker, language = opening["marker"], opening["info"].strip()
+                fence, current = (marker[0], len(marker), language.startswith("python"), opening["indent"]), []
             elif re.match(r"#{1,6} ", line):
                 heading = line.lstrip("# ").strip()
             continue
-        character, length, is_python = fence
-        if re.match(rf"^ {{0,3}}{re.escape(character)}{{{length},}}\s*$", line):
+        character, length, is_python, indent = fence
+        if re.match(rf"^[ \t]*{re.escape(character)}{{{length},}}\s*$", line):
             if is_python:
                 n = counter.get(heading, 0)
                 counter[heading] = n + 1
                 blocks.append((f"{path.relative_to(ROOT).as_posix()}::{heading}::{n}", "\n".join(current)))
             fence = None
         elif is_python:
-            current.append(line)
+            current.append(line[len(indent) :] if line.startswith(indent) else line.lstrip())
     return blocks
 
 

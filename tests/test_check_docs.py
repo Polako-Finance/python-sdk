@@ -66,6 +66,35 @@ def test_a_longer_fence_is_not_closed_by_a_shorter_one(check_docs, monkeypatch, 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1")]
 
 
+def test_a_line_with_backticks_and_text_after_them_is_not_a_fence(check_docs, monkeypatch, tmp_path):
+    markdown = "## Setup\n\n```x``` is shown like this\n\n```python\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1")]
+
+
+def test_a_tilde_fence_may_have_backticks_in_its_info_string(check_docs, monkeypatch, tmp_path):
+    markdown = "## Setup\n\n~~~text `quoted`\n# Not a heading\n~~~\n\n```python\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1")]
+
+
+@pytest.mark.parametrize("indent", [" ", "   ", "    ", "      ", "\t"])
+def test_a_block_inside_a_list_is_found_and_dedented(check_docs, monkeypatch, tmp_path, indent):
+    body = f"{indent}```python\n{indent}x = 1\n{indent}if x:\n{indent}    y = 2\n{indent}```\n"
+    markdown = f"## Setup\n\n1. Do this:\n\n{body}\n```python\nz = 3\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [
+        ("Setup::0", "x = 1\nif x:\n    y = 2"),
+        ("Setup::1", "z = 3"),
+    ]
+
+
+def test_an_indented_block_is_closed_by_a_fence_with_any_indent(check_docs, monkeypatch, tmp_path):
+    markdown = "## Setup\n\n    ```python\n    x = 1\n```\n\n```python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("Setup::0", "x = 1"), ("Setup::1", "y = 2")]
+
+
 def test_a_real_heading_after_a_block_still_counts(check_docs, monkeypatch, tmp_path):
     markdown = "## One\n\n```bash\n# note\n```\n\n### Two\n\n```python\nx = 1\n```\n"
 

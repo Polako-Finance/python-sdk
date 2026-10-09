@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from polako.sdk import parse_subscription_webhook
+from polako.sdk import WebhookPayloadError, parse_subscription_webhook
 from polako.sdk._decoding import parse_moment, read_moment
 from tests.factories import generate_api_key, make_charge_succeeded_payload, make_signed_webhook
 from tests.generators import generate_aware_datetime, generate_naive_datetime
@@ -69,8 +69,24 @@ def test_a_space_may_separate_the_day_from_the_time():
     assert parse_moment("2026-03-05 10:20:30Z") == datetime(2026, 3, 5, 10, 20, 30, tzinfo=timezone.utc)
 
 
-def test_a_bare_day_is_midnight_utc():
-    assert parse_moment("2026-03-05") == datetime(2026, 3, 5, tzinfo=timezone.utc)
+def test_a_day_without_a_time_is_not_a_time():
+    """A charge or a creation has a time of day; a bare date would be silently read as a midnight."""
+    day = generate_naive_datetime().date().isoformat()
+
+    with pytest.raises(ValueError):
+        parse_moment(day)
+    with pytest.raises(ValueError):
+        parse_moment(day + "Z")
+
+
+def test_a_webhook_whose_charge_time_is_only_a_day_is_refused():
+    key = generate_api_key()
+    body, signature = make_signed_webhook(
+        make_charge_succeeded_payload(charged_at=generate_naive_datetime().date().isoformat()), key
+    )
+
+    with pytest.raises(WebhookPayloadError):
+        parse_subscription_webhook(body, signature, key)
 
 
 @pytest.mark.parametrize(
