@@ -8,18 +8,21 @@ import hashlib
 import hmac
 import json
 import random
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 from uuid import UUID, uuid4
 
 from polako.sdk import (
     BillingInterval,
+    ChargeAttemptStatus,
     CustomerAddress,
     CustomerInfo,
     InitCustomerInfo,
     OrderDetails,
     OrderItem,
     RefundItem,
+    SubscriptionStatus,
 )
 from polako.sdk._constants import LANGUAGES, TAX_SCHEMAS
 from polako.sdk._subscription import SubscribeRequest
@@ -487,3 +490,120 @@ def make_refund_callback_body(secret_key: str, **overrides: Any) -> Dict[str, An
     }
     fields.update(overrides)
     return make_signed_callback_body(secret_key, **fields)
+
+
+# ---------------------------------------------------------------------------
+# The subscription read API: what the server sends for a list and for one subscription
+# ---------------------------------------------------------------------------
+
+
+def wire_moment(moment: Optional[datetime] = None) -> str:
+    """A time as the server writes it: ISO 8601 with a trailing `Z` for UTC."""
+    moment = moment or generate_recent_datetime(days_ago=random.randint(0, 30), hours_ago=random.randint(0, 23))
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def make_subscription_summary_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "customerId": str(uuid4()),
+        "customerEmail": generate_random_email(),
+        "merchantSubscriptionRef": generate_readable_string(READABLE_STRING_LENGTH),
+        "amount": str(generate_random_decimal(3, 2)),
+        "currency": random.choice(CURRENCIES),
+        "billingInterval": random.choice(list(BillingInterval)).value,
+        "status": random.choice(list(SubscriptionStatus)).value,
+        "nextChargeAt": wire_moment(),
+        "lastChargedAt": wire_moment(),
+        "createdAt": wire_moment(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_subscription_customer_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "externalCustomerId": generate_readable_string(READABLE_STRING_LENGTH),
+        "email": generate_random_email(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_saved_card_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "maskedPan": f"{generate_random_digit_string(6)}******{generate_random_digit_string(4)}",
+        "cardBrand": random.choice(["VISA", "MASTERCARD", "DINACARD"]),
+        "panExpiry": f"{random.randint(1, 12):02d}/{random.randint(27, 35)}",
+        "status": random.choice(["active", "revoked"]),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_charge_attempt_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "chargeDate": generate_recent_datetime(days_ago=random.randint(0, 60)).date().isoformat(),
+        "orderId": generate_readable_string(READABLE_STRING_LENGTH),
+        "status": random.choice(list(ChargeAttemptStatus)).value,
+        "resultCode": generate_random_digit_string(3),
+        "errorClass": random.choice(["transient", "insufficient_funds", "hard_decline", None]),
+        "errorMessage": generate_readable_string(READABLE_STRING_LENGTH),
+        "amount": str(generate_random_decimal(3, 2)),
+        "retryCount": random.randint(0, 4),
+        "reconcileCount": random.randint(0, 2),
+        "nextRetryAt": wire_moment(),
+        "createdAt": wire_moment(),
+        "updatedAt": wire_moment(),
+        "paymentSessionId": str(uuid4()),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_subscription_event_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "eventType": random.choice(["created", "charge_succeeded", "paused", "resumed", "cancelled"]),
+        "payload": {generate_readable_string(6): generate_readable_string(8)},
+        "createdAt": wire_moment(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_subscription_detail_payload(**overrides: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(uuid4()),
+        "customer": make_subscription_customer_payload(),
+        "savedCard": make_saved_card_payload(),
+        "merchantSubscriptionRef": generate_readable_string(READABLE_STRING_LENGTH),
+        "amount": str(generate_random_decimal(3, 2)),
+        "currency": random.choice(CURRENCIES),
+        "billingInterval": random.choice(list(BillingInterval)).value,
+        "status": random.choice(list(SubscriptionStatus)).value,
+        "anchorAt": wire_moment(),
+        "nextChargeAt": wire_moment(),
+        "lastChargedAt": wire_moment(),
+        "createdAt": wire_moment(),
+        "failedChargeCount": random.randint(0, 3),
+        "lastFailedChargeAt": wire_moment(),
+        "chargeHistory": [make_charge_attempt_payload() for _ in range(random.randint(1, 3))],
+        "events": [make_subscription_event_payload() for _ in range(random.randint(1, 3))],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def make_subscription_page_payload(count: Optional[int] = None, **overrides: Any) -> Dict[str, Any]:
+    items = [make_subscription_summary_payload() for _ in range(count if count is not None else random.randint(1, 4))]
+    payload: Dict[str, Any] = {
+        "items": items,
+        "total": len(items) + random.randint(0, 20),
+        "page_size": random.randint(len(items) or 1, 50),
+    }
+    payload.update(overrides)
+    return payload
