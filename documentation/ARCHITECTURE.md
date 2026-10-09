@@ -21,14 +21,15 @@ All under `src/polako/sdk/`; the package exports its public names from `__init__
 
 | Module | Role |
 |--------|------|
-| `_async_api.py` | `AsyncPolakoClient` (exported as `PolakoClient`): the payment methods, `create_subscription`, `parse_payment_callback` |
+| `_async_api.py` | `AsyncPolakoClient` (exported as `PolakoClient`): the payment methods, `create_subscription`, `get_subscription`, `list_subscriptions`, `parse_payment_callback` |
 | `_async_client.py` | The HTTP transport: headers, (de)serialization, mapping of statuses to exceptions, retries of requests that carry an `Idempotency-Key` |
 | `_exceptions.py` | Exceptions: by HTTP status (`NotFoundError` for 404 among them), configuration, webhook signature and payload |
 | `_serializable.py` | Dataclass (de)serialization with wire aliases (`alias` metadata) and a decode hook |
 | `_decoding.py` | Reading the values of a server response: the strict readers (UUID, text, count, amount, time, date, object), the tolerant enum reader (an unknown value stays the raw text), nested objects and lists, and `StrictModel` (required fields must be there). Models use it; it holds no model |
 | `_order.py` | Payment models |
 | `_subscription.py` | The subscription request and response, the three registration forms, `SubscriptionCreated` |
-| `_subscription_list.py` | The operation "list subscriptions": `SubscriptionSummary`, `SubscriptionPage` and the list response. Models are grouped by operation (as in the server's `model/subscription/`), not by request and response |
+| `_subscription_list.py` | The operation "list subscriptions": what is asked (`SubscriptionListQuery`: the filters, sorting and page, checked, turned into query parameters) and what comes back (`SubscriptionSummary`, `SubscriptionPage`, the list response). Models are grouped by operation (as in the server's `model/subscription/`), not by request and response |
+| `_validation.py` | Checks of the arguments of the subscription read and management calls (ID, limit, offset, sorting, search, status and interval choices, time bounds), made before a request is sent; nothing else. Each raises `ValueError` naming the argument |
 | `_subscription_detail.py` | The operation "read one subscription": `SubscriptionDetails` with its customer, card, charge history and event journal |
 | `_render.py` | Turns a registration form into a self-submitting or redirecting HTML page (escaping, http/https address rule) |
 | `_webhook.py` | Signature verification, the subscription events, the registration-failure notification |

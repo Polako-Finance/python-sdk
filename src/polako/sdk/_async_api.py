@@ -1,11 +1,12 @@
 """Async API client for Polako Finance."""
 
+from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional, TypeVar
+from typing import Dict, Iterable, List, Optional, TypeVar, Union
 from uuid import UUID, uuid4
 
 from polako.sdk._async_client import AsyncHttpClient
-from polako.sdk._constants import BillingInterval
+from polako.sdk._constants import BillingInterval, SubscriptionStatus
 from polako.sdk._exceptions import ConfigurationError
 from polako.sdk._order import (
     CheckStatusRequest,
@@ -27,6 +28,9 @@ from polako.sdk._order import (
     SignedPaymentCallbackRaw,
 )
 from polako.sdk._subscription import SubscribeRequest, SubscribeResponse, SubscriptionCreated
+from polako.sdk._subscription_detail import SubscriptionDetails
+from polako.sdk._subscription_list import SubscriptionListQuery, SubscriptionListResponse, SubscriptionPage
+from polako.sdk._validation import check_subscription_id
 
 T = TypeVar("T")
 
@@ -360,10 +364,7 @@ class AsyncPolakoClient:
             ServerError: If the gateway or the card processor fails (HTTP 5xx)
             HttpClientError: If there is a network error
         """
-        if self._company_id is None:
-            raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
-        if not self._api_key:
-            raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        credentials = self._subscription_credentials()
 
         try:
             interval = BillingInterval(billing_interval)
@@ -392,13 +393,120 @@ class AsyncPolakoClient:
             f"/v1/company/{self._company_id}/subscriptions",
             request_body=request,
             response_model=SubscribeResponse,
-            headers={"company_api_key": self._api_key, "Idempotency-Key": key},
+            headers={**credentials, "Idempotency-Key": key},
         )
         return SubscriptionCreated(
             subscription_id=response.subscription_id,
             registration_form=response.registration_form,
             idempotency_key=key,
         )
+
+    def _subscription_credentials(self) -> Dict[str, str]:
+        """The header that identifies the platform on subscription calls; the client must be configured for them."""
+        if self._company_id is None:
+            raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
+        if not self._api_key:
+            raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        return {"company_api_key": self._api_key}
+
+    async def get_subscription(self, subscription_id: Union[UUID, str]) -> SubscriptionDetails:
+        """
+        Read one subscription: its customer, card, charge history (newest first) and event journal (oldest first).
+
+        The client must be created with ``company_id`` and ``api_key``. Reading works even when subscriptions are
+        switched off for the company. The call is not retried: a failed attempt is raised as it is.
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Returns:
+            SubscriptionDetails
+
+        Raises:
+            ConfigurationError: If the client has no ``company_id`` or ``api_key``
+            ValueError: If ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
+            HttpClientError: If there is a network error
+        """
+        credentials = self._subscription_credentials()
+        subscription = check_subscription_id(subscription_id)
+
+        return await self._http_client.get(
+            f"/v1/company/{self._company_id}/subscriptions/{subscription}",
+            response_model=SubscriptionDetails,
+            headers=credentials,
+        )
+
+    async def list_subscriptions(
+        self,
+        *,
+        status: Optional[Union[SubscriptionStatus, str, Iterable[Union[SubscriptionStatus, str]]]] = None,
+        billing_interval: Optional[Union[BillingInterval, str, Iterable[Union[BillingInterval, str]]]] = None,
+        search: Optional[str] = None,
+        created_from: Optional[Union[date, datetime]] = None,
+        created_to: Optional[Union[date, datetime]] = None,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> SubscriptionPage:
+        """
+        List the subscriptions of the company, one page at a time.
+
+        The client must be created with ``company_id`` and ``api_key``. Reading works even when subscriptions are
+        switched off for the company. The call is not retried. To read all pages, call it again with a larger
+        ``offset`` until ``offset + len(items) >= total``.
+
+        Args:
+            status: Only subscriptions in this status; one value or several (any of them matches)
+            billing_interval: Only subscriptions charged at this interval; one value or several
+            search: Matched against the customer's email, your reference and the subscription ID
+            created_from: Only subscriptions created on or after this day or moment (a ``date``, or a ``datetime``
+                with a timezone; moments are sent to the second)
+            created_to: Only subscriptions created on or before this day or moment
+            sort_by: ``created_at`` (the default), ``next_charge_at``, ``last_charged_at``, ``amount`` or ``status``
+            sort_order: ``asc`` or ``desc``
+            limit: Subscriptions per page, 1 to 100
+            offset: How many matching subscriptions to skip
+
+        Returns:
+            SubscriptionPage with ``items``, ``total``, ``limit`` (the page size) and ``offset``
+
+        Raises:
+            ConfigurationError: If the client has no ``company_id`` or ``api_key``
+            ValueError: If an argument is invalid
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key belongs to another company (HTTP 403)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
+            HttpClientError: If there is a network error
+        """
+        credentials = self._subscription_credentials()
+        query = SubscriptionListQuery.from_arguments(
+            status=status,
+            billing_interval=billing_interval,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+        )
+
+        response = await self._http_client.get(
+            f"/v1/company/{self._company_id}/subscriptions",
+            response_model=SubscriptionListResponse,
+            headers=credentials,
+            params=query.to_params(),
+        )
+        return SubscriptionPage(items=response.items, total=response.total, limit=response.page_size, offset=query.offset)
 
     @staticmethod
     def parse_payment_callback(payload: str, secret_key: Optional[str] = None) -> PaymentCallback:

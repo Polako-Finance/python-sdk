@@ -21,7 +21,7 @@ from polako.sdk import (
     SubscriptionStatus,
     SubscriptionSummary,
 )
-from polako.sdk._subscription_list import _PageWire
+from polako.sdk._subscription_list import SubscriptionListResponse
 from tests.factories import (
     make_charge_attempt_payload,
     make_saved_card_payload,
@@ -32,7 +32,7 @@ from tests.factories import (
     make_subscription_summary_payload,
     wire_moment,
 )
-from tests.generators import generate_readable_string
+from tests.generators import generate_aware_datetime, generate_naive_datetime, generate_readable_string, generate_recent_date
 
 
 def instant(text: str) -> datetime:
@@ -89,7 +89,7 @@ def test_money_is_a_decimal_whether_sent_as_text_or_as_a_number(wire, expected):
 
 
 def test_times_are_timezone_aware_and_keep_the_instant():
-    moment = datetime(2026, 3, random.randint(1, 28), random.randint(0, 23), random.randint(0, 59), tzinfo=timezone.utc)
+    moment = generate_aware_datetime().astimezone(timezone.utc)
     forms = [
         moment.isoformat().replace("+00:00", "Z"),
         moment.isoformat(),
@@ -103,9 +103,11 @@ def test_times_are_timezone_aware_and_keep_the_instant():
 
 
 def test_a_time_without_a_zone_is_read_as_utc():
-    sub = SubscriptionSummary.from_dict(make_subscription_summary_payload(createdAt="2026-03-05T10:20:30"))
+    naive = generate_naive_datetime()
 
-    assert sub.created_at == datetime(2026, 3, 5, 10, 20, 30, tzinfo=timezone.utc)
+    sub = SubscriptionSummary.from_dict(make_subscription_summary_payload(createdAt=naive.isoformat()))
+
+    assert sub.created_at == naive.replace(tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize("status", list(SubscriptionStatus))
@@ -363,7 +365,7 @@ def test_a_detail_without_a_required_field_is_an_error(field_name):
         {"savedCard": make_saved_card_payload(id=None)},
         {"chargeHistory": "x"},
         {"chargeHistory": [make_charge_attempt_payload(id="not-a-uuid")]},
-        {"chargeHistory": [make_charge_attempt_payload(chargeDate="12.03.2026")]},
+        {"chargeHistory": [make_charge_attempt_payload(chargeDate=generate_recent_date().strftime("%d.%m.%Y"))]},
         {"chargeHistory": [make_charge_attempt_payload(retryCount="many")]},
         {"chargeHistory": [make_charge_attempt_payload(createdAt=None)]},
         {"events": "x"},
@@ -399,7 +401,7 @@ def test_a_detail_cannot_be_changed():
 def test_the_list_response_is_read_into_summaries():
     payload = make_subscription_page_payload(count=3)
 
-    wire = _PageWire.from_dict(payload)
+    wire = SubscriptionListResponse.from_dict(payload)
 
     assert isinstance(wire.items, tuple) and len(wire.items) == 3
     assert [str(item.id) for item in wire.items] == [item["id"] for item in payload["items"]]
@@ -407,7 +409,7 @@ def test_the_list_response_is_read_into_summaries():
 
 
 def test_an_empty_list_response():
-    wire = _PageWire.from_dict(make_subscription_page_payload(count=0, total=0))
+    wire = SubscriptionListResponse.from_dict(make_subscription_page_payload(count=0, total=0))
 
     assert wire.items == () and wire.total == 0
 
@@ -418,7 +420,7 @@ def test_a_list_response_without_a_required_field_is_an_error(field_name):
     del payload[field_name]
 
     with pytest.raises(ValueError):
-        _PageWire.from_dict(payload)
+        SubscriptionListResponse.from_dict(payload)
 
 
 @pytest.mark.parametrize(
@@ -434,7 +436,7 @@ def test_a_list_response_without_a_required_field_is_an_error(field_name):
 )
 def test_a_malformed_list_response_is_an_error(overrides):
     with pytest.raises(ValueError):
-        _PageWire.from_dict(make_subscription_page_payload(**overrides))
+        SubscriptionListResponse.from_dict(make_subscription_page_payload(**overrides))
 
 
 def test_a_page_holds_what_the_caller_asked_for_and_cannot_be_changed():
