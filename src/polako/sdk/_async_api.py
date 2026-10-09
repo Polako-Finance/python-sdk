@@ -354,8 +354,8 @@ class AsyncPolakoClient:
             SubscriptionCreated with the subscription ID, the registration form and the idempotency key used
 
         Raises:
-            ConfigurationError: If the client has no ``company_id`` or ``api_key``
-            ValueError: If an argument is invalid
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``amount`` is not greater than zero
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
@@ -423,8 +423,8 @@ class AsyncPolakoClient:
             SubscriptionDetails
 
         Raises:
-            ConfigurationError: If the client has no ``company_id`` or ``api_key``
-            ValueError: If ``subscription_id`` is not a UUID
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
@@ -478,8 +478,8 @@ class AsyncPolakoClient:
             SubscriptionPage with ``items``, ``total``, ``limit`` (the page size) and ``offset``
 
         Raises:
-            ConfigurationError: If the client has no ``company_id`` or ``api_key``
-            ValueError: If an argument is invalid
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``limit`` is not from 1 to 100
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             RateLimitedError: If the rate limit is hit (HTTP 429)
@@ -507,6 +507,88 @@ class AsyncPolakoClient:
             params=query.to_params(),
         )
         return SubscriptionPage(items=response.items, total=response.total, limit=response.page_size, offset=query.offset)
+
+    async def _change_subscription(self, action: str, subscription_id: Union[UUID, str]) -> None:
+        credentials = self._subscription_credentials()
+        subscription = check_subscription_id(subscription_id)
+
+        await self._http_client.patch(
+            f"/v1/company/{self._company_id}/subscriptions/{subscription}/{action}",
+            headers=credentials,
+        )
+
+    async def pause_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Pause an active subscription: no charges are made until it is resumed.
+
+        The client must be created with ``company_id`` and ``api_key``. The next charge date is kept, so if it passes
+        while the subscription is paused, the charge is attempted soon after it is resumed. The call is not
+        retried: if the network fails you cannot tell whether the change was made, so read the subscription with
+        ``get_subscription`` before repeating it.
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is not active (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("pause", subscription_id)
+
+    async def resume_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Resume a paused subscription: scheduled charges go on.
+
+        The client must be created with ``company_id`` and ``api_key``. The next charge date is not moved; if it has
+        passed during the pause, the charge is attempted soon after the resume. The call is not retried (see
+        ``pause_subscription``).
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is not paused (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("resume", subscription_id)
+
+    async def cancel_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Cancel a subscription for good: no further charges, and it cannot be resumed.
+
+        The client must be created with ``company_id`` and ``api_key``. Cancelling does not refund anything already
+        charged; use ``refund_session`` with the ``payment_session_id`` of a charge in the history for that. The card
+        is released when no other live subscription uses it. The call is not retried (see ``pause_subscription``).
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is already cancelled (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("cancel", subscription_id)
 
     @staticmethod
     def parse_payment_callback(payload: str, secret_key: Optional[str] = None) -> PaymentCallback:

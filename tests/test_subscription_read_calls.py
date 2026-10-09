@@ -9,21 +9,16 @@ import pytest
 from polako.sdk import (
     BillingInterval,
     ConfigurationError,
-    ConflictError,
-    ForbiddenError,
     HttpClientError,
     HttpRequestError,
     NotFoundError,
     PolakoClient,
-    RateLimitedError,
-    RequestValidationError,
-    ServerError,
     SubscriptionDetails,
     SubscriptionPage,
     SubscriptionStatus,
     SubscriptionSummary,
-    UnauthorizedError,
 )
+from tests.error_cases import STATUS_ERRORS
 from tests.factories import make_credentials, make_subscription_detail_payload, make_subscription_page_payload
 from tests.generators import generate_aware_datetime, generate_readable_string, generate_recent_date
 
@@ -92,21 +87,9 @@ async def test_a_client_without_company_id_or_api_key_is_refused_before_any_requ
     assert gateway.requests == []
 
 
-ERRORS = [
-    (401, UnauthorizedError),
-    (403, ForbiddenError),
-    (404, NotFoundError),
-    (409, ConflictError),
-    (422, RequestValidationError),
-    (429, RateLimitedError),
-    (500, ServerError),
-    (503, ServerError),
-]
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("call", CALLS)
-@pytest.mark.parametrize("status, expected", ERRORS)
+@pytest.mark.parametrize("status, expected", STATUS_ERRORS)
 async def test_each_failure_status_is_its_own_error(gateway, subscription_client, call, status, expected):
     detail = generate_readable_string(12)
 

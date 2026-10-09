@@ -10,23 +10,11 @@ from polako.sdk import (
     NotFoundError,
     RateLimitedError,
     RequestValidationError,
-    ServerError,
     UnauthorizedError,
 )
 from polako.sdk._async_client import AsyncHttpClient
+from tests.error_cases import PLAIN_STATUSES, SPECIFIC_STATUS_ERRORS
 from tests.generators import generate_api_key, generate_random_host, generate_readable_string
-
-SPECIFIC = [
-    (401, UnauthorizedError),
-    (403, ForbiddenError),
-    (404, NotFoundError),
-    (409, ConflictError),
-    (422, RequestValidationError),
-    (429, RateLimitedError),
-    (500, ServerError),
-    (502, ServerError),
-    (503, ServerError),
-]
 
 
 async def fetch(gateway, status, **response):
@@ -36,7 +24,7 @@ async def fetch(gateway, status, **response):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status, expected", SPECIFIC)
+@pytest.mark.parametrize("status, expected", SPECIFIC_STATUS_ERRORS)
 async def test_status_maps_to_its_own_class(gateway, status, expected):
     body = f'{{"detail": "{generate_readable_string(12)}"}}'
 
@@ -49,7 +37,7 @@ async def test_status_maps_to_its_own_class(gateway, status, expected):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status, expected", SPECIFIC)
+@pytest.mark.parametrize("status, expected", SPECIFIC_STATUS_ERRORS)
 async def test_specific_errors_stay_catchable_as_the_base_classes(gateway, status, expected):
     with pytest.raises(HttpRequestError):
         await fetch(gateway, status)
@@ -58,7 +46,7 @@ async def test_specific_errors_stay_catchable_as_the_base_classes(gateway, statu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [400, 410, 418])
+@pytest.mark.parametrize("status", PLAIN_STATUSES)
 async def test_other_statuses_stay_plain_http_request_error(gateway, status):
     with pytest.raises(HttpRequestError) as exc:
         await fetch(gateway, status)
@@ -67,7 +55,7 @@ async def test_other_statuses_stay_plain_http_request_error(gateway, status):
 
 
 def test_specific_classes_are_distinct():
-    classes = [expected for _, expected in SPECIFIC]
+    classes = [expected for _, expected in SPECIFIC_STATUS_ERRORS]
     for cls in set(classes):
         assert issubclass(cls, HttpRequestError)
     assert not issubclass(UnauthorizedError, ForbiddenError)
