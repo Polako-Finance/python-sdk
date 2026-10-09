@@ -324,3 +324,46 @@ def test_only_the_marks_of_the_quote_that_holds_the_fence_are_taken_off(check_do
     markdown = "## A\n\n> ```python\n> x = 1\n> > y = 2\n> ```\n\n> > ```python\n> > >>> z = 3\n> > ```\n"
 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\n> y = 2"), ("A::1", ">>> z = 3")]
+
+
+@pytest.mark.parametrize("marker", ["-", "1.", "10.", "99)", "100.", "123456789."])
+def test_a_quoted_block_in_a_list_item_is_found_whatever_the_width_of_the_marker(check_docs, monkeypatch, tmp_path, marker):
+    pad = " " * (len(marker) + 1)
+    markdown = f"## A\n\n{marker} > ```python\n{pad}> x = 1\n{pad}> >>> y\n{pad}> ```\n\n```python\nz = 3\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\n>>> y"), ("A::1", "z = 3")]
+
+
+def test_a_list_item_with_two_quotes_takes_off_both_marks_and_no_more(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n- > > ```python\n  > > >>> x = 1\n  > > > y\n  > > ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", ">>> x = 1\n> y")]
+
+
+def test_a_quoted_block_in_a_list_item_whose_quote_ends_is_never_closed(check_docs, monkeypatch, tmp_path):
+    with pytest.raises(ValueError, match="never closed"):
+        blocks_of(check_docs, monkeypatch, tmp_path, "## A\n\n- > ```python\n  > x = 1\n\n  > ```\n")
+
+
+@pytest.mark.parametrize(
+    "info",
+    ['{title="a .python b"}', "{title='a .python b'}", '{.bash title="x .python"}', '{key=".python"}'],
+)
+def test_a_class_named_inside_a_quoted_attribute_value_is_not_a_class(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+def test_a_class_beside_a_quoted_attribute_value_is_still_a_class(check_docs, monkeypatch, tmp_path):
+    markdown = '## A\n\n```{title="a b" .python}\nx = 1\n```\n'
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_the_slack_before_the_first_mark_does_not_widen_the_gap_between_marks(check_docs, monkeypatch, tmp_path):
+    """Only the first mark may sit behind the width of a list marker; a second one four columns in is text, not a quote."""
+    markdown = "## A\n\n10. > > ```python\n    > > x = 1\n    >     > y = 2\n    > > ```\n"
+
+    with pytest.raises(ValueError, match="never closed"):
+        blocks_of(check_docs, monkeypatch, tmp_path, markdown)
