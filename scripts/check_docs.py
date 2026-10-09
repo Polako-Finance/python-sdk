@@ -40,9 +40,9 @@ CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunct
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
 HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
-QUOTE = re.compile(r"^(?: {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ ]+)?(?: {0,3}>[ ]?)+")
+QUOTE = re.compile(r"^(?: {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ ]+)*(?: {0,3}>[ ]?)+")
 LANGUAGE = re.compile(r"[A-Za-z0-9]+(?=$|[\s,{:}])")  # the word ends at a space, a comma, a brace or a colon
-ATTRIBUTE_VALUE = re.compile(r"\"[^\"]*\"|'[^']*'")  # a quoted value, which may hold anything, ``.python`` included
+ATTRIBUTE_VALUE = re.compile(r"\"[^\"]*(?:\"|$)|'[^']*(?:'|$)")  # a quoted value (an unclosed one runs to the end)
 ATTRIBUTE_CLASS = re.compile(r"(?<![^\s{])\.([^\s}]+)")  # ``.python`` in a Pandoc list such as ``{#id .python}``
 INDENT = re.compile(r"[ \t]*")
 PYTHON_LANGUAGES = frozenset({"python", "py", "python3", "py3"})  # ``pycon`` is a console session, not code to run
@@ -61,8 +61,9 @@ def _unquote(line: str, depth: int, slack: int) -> Optional[str]:
     """
     Take off the marks of the ``depth`` quotes that hold a fence, and no more; None when the line is outside them.
 
-    A line of the quote may be indented by up to ``slack`` spaces before its first mark (the width of the list marker that
-    holds the quote, as in ``10. > ```python``), then by up to three before each next one. A line without the marks, a blank
+    A line of the quote may be indented by up to ``slack`` spaces before its first mark: as far as the first mark stood in
+    the opening line, which is where the list markers that hold the quote end (``10. > ```python``, ``- - > ```python``),
+    and at least three. Before each next mark it may be indented by up to three. A line without the marks, a blank
     one included, is outside the quote: the quote has ended and the fence with it.
     """
     for level in range(depth):

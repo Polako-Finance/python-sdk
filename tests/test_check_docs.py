@@ -367,3 +367,17 @@ def test_the_slack_before_the_first_mark_does_not_widen_the_gap_between_marks(ch
 
     with pytest.raises(ValueError, match="never closed"):
         blocks_of(check_docs, monkeypatch, tmp_path, markdown)
+
+
+@pytest.mark.parametrize("info", ['{title="unterminated .python}', "{title='unterminated .python}", '{.bash title="x .python'])
+def test_a_quote_that_is_never_closed_in_the_attributes_hides_what_follows_it(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+@pytest.mark.parametrize("prefix, pad", [("- - ", "    "), ("1. - ", "     "), ("- 10. ", "      "), ("- - - ", "      ")])
+def test_a_quote_in_a_nested_list_item_holds_a_block(check_docs, monkeypatch, tmp_path, prefix, pad):
+    markdown = f"## A\n\n{prefix}> ```python\n{pad}> x = 1\n{pad}> >>> y\n{pad}> ```\n\n```python\nz = 3\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\n>>> y"), ("A::1", "z = 3")]
