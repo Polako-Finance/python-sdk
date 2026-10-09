@@ -337,9 +337,9 @@ class AsyncPolakoClient:
         request again with the same key returns the same subscription instead of creating a second one. Without
         it a key is generated and returned in the result. A failed attempt (a network error or timeout, or HTTP 429,
         500, 502, 503 or 504) is repeated with the same key, up to 3 attempts in all, so in the worst case a call takes
-        two minutes or more before it gives up: the 30 s timeout applies to each phase of an attempt (connect, write, read) and
-        there is no overall deadline, so set your own deadline above that. The endpoint accepts 20 requests
-        per 60 seconds, and every attempt counts against that limit.
+        a minute and a half or more before it gives up: the 30 s timeout applies to each phase of an attempt
+        (connect, write, read) and there is no overall deadline, so set your own deadline above that. The endpoint
+        accepts 20 requests per 60 seconds, and every attempt counts against that limit.
 
         Args:
             customer_email: Email of the customer

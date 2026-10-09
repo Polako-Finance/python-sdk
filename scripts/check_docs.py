@@ -40,7 +40,8 @@ CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunct
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
 HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
-QUOTE = re.compile(r"^(?: {0,3}>[ ]?)+")
+QUOTE = re.compile(r"^(?: {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ ]+)?(?: {0,3}>[ ]?)+")
+LANGUAGE = re.compile(r"[A-Za-z0-9]+")
 INDENT = re.compile(r"[ \t]*")
 PYTHON_LANGUAGES = frozenset({"python", "py", "python3", "py3"})  # ``pycon`` is a console session, not code to run
 
@@ -66,7 +67,8 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     """
     Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it.
 
-    The language of a fence is the first word of its info string, in any case: ``python``, ``py``, ``python3``, ``py3``.
+    The language of a fence is the word that opens its info string, in any case: ``python``, ``py``, ``python3``, ``py3``.
+    Attributes may follow it, with or without a space (``python,ignore``, ``python{1,2}``, ``{.python}``).
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
     fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
@@ -76,8 +78,9 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     As in CommonMark, a fence indented by four columns or more is a fence only inside a list item (then its code is dedented
     by the indent of the opening fence); anywhere else it is an indented code block and is not looked at. A list lasts
     until a heading or a paragraph that is not indented and comes after a blank line. A heading may be indented by up to
-    three spaces. A fence inside a quote (``> ```python``) is read without the quote marks; a quote that ends before the
-    fence does leaves the block never closed.
+    three spaces. A fence inside a quote (``> ```python``), also one in a list item (``- > ```python``), is read without
+    the quote marks, and only that one: in any other block ``>>>`` is code. A quote that ends before the fence does leaves
+    the block never closed (CommonMark would close it there; stopping is the safe way for a check).
 
     Raises:
         ValueError: If a fenced block is never closed
@@ -87,14 +90,15 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent, quoted) inside a fenced block
     in_list, after_blank = False, False
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        quote = QUOTE.match(raw)
+        # Quote marks are the container of a fence that opened inside a quote; inside any other block they are code.
+        quote = QUOTE.match(raw) if fence is None or fence[4] else None
         line = raw[quote.end() :] if quote else raw
         if fence is None:
             opening = FENCE.match(line)
             inline = opening and opening["marker"][0] == "`" and "`" in opening["info"]
             if opening and not inline and (_columns(opening["indent"]) < 4 or in_list):
-                marker, words = opening["marker"], opening["info"].split()
-                is_python = bool(words) and words[0].lower() in PYTHON_LANGUAGES
+                marker, word = opening["marker"], LANGUAGE.match(opening["info"].strip().lstrip("{. "))
+                is_python = bool(word) and word[0].lower() in PYTHON_LANGUAGES
                 fence, current, opened_at = (marker[0], len(marker), is_python, opening["indent"], bool(quote)), [], number
             elif HEADING.match(line):
                 heading, in_list = line.lstrip("# ").strip(), False

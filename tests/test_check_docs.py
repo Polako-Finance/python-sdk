@@ -253,3 +253,30 @@ def test_the_tabs_of_a_block_in_a_list_stay_when_the_indent_is_the_same_text(che
     markdown = "## A\n\n- Step\n\n    ```python\n    if x:\n    \ty = 2\n    ```\n"
 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "if x:\n\ty = 2")]
+
+
+def test_quote_marks_inside_a_block_that_is_not_in_a_quote_are_code(check_docs, monkeypatch, tmp_path):
+    """A console session or a continuation line starts with the characters of a quote and must stay as written."""
+    markdown = "## A\n\n```python\n>>> x = 1\n  > b):\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", ">>> x = 1\n  > b):")]
+
+
+@pytest.mark.parametrize("marker", ["-", "*", "+", "1.", "12)"])
+def test_a_quote_inside_a_list_item_holds_a_block(check_docs, monkeypatch, tmp_path, marker):
+    markdown = f"## A\n\n{marker} > ```python\n  > x = 1\n  > ```\n\n```python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1"), ("A::1", "y = 2")]
+
+
+def test_a_list_item_that_is_not_a_quote_is_left_alone(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n- > not a fence\n- ```x``` nor this\n\n```python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+@pytest.mark.parametrize("info", ["python,ignore", "python{1,2}", "{.python}", "{ .python .numberLines }", "python:file.py"])
+def test_the_language_may_be_followed_by_attributes_without_a_space(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
