@@ -153,3 +153,43 @@ def test_the_documentation_of_this_repository_names_its_blocks_by_real_headings(
             continue
         text = (check_docs.ROOT / name).read_text(encoding="utf-8")
         assert any(line.lstrip("# ").strip() == kind and line.startswith("#") for line in text.splitlines()), key
+
+
+def test_a_line_of_backticks_indented_four_columns_inside_a_block_does_not_close_it(check_docs, monkeypatch, tmp_path):
+    """Outside a list a closing fence has at most three spaces; this line is text of the block (nested markup)."""
+    markdown = "## A\n\n```python\ntext = '''\n    ```\n'''\n```\n\n```python\ny = 2\n```\n"
+
+    found = blocks_of(check_docs, monkeypatch, tmp_path, markdown)
+
+    assert found == [("A::0", "text = '''\n    ```\n'''"), ("A::1", "y = 2")]
+
+
+def test_a_fence_in_a_list_may_be_closed_three_columns_deeper_than_it_was_opened(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n- Step\n\n  ```python\n  x = 1\n     ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_the_indent_of_a_block_is_taken_off_by_columns_whatever_it_is_made_of(check_docs, monkeypatch, tmp_path):
+    """The fence is indented with spaces and the body with tabs: four columns come off, the rest stays."""
+    markdown = "## A\n\n- Step\n\n    ```python\n\tif x:\n\t\ty = 2\n    ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "if x:\n    y = 2")]
+
+
+def test_a_body_line_indented_less_than_the_fence_loses_only_what_it_has(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n- Step\n\n      ```python\n   x = 1\n      ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_updating_the_manifest_reports_a_broken_document_and_writes_nothing(check_docs, monkeypatch, tmp_path, capsys):
+    (tmp_path / "doc.md").write_text("## Setup\n\n```python\nx = 1\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    monkeypatch.setattr(check_docs, "ROOT", tmp_path)
+    monkeypatch.setattr(check_docs, "DOCS", ["doc.md"])
+    monkeypatch.setattr(check_docs, "MANIFEST", manifest)
+
+    assert check_docs.update() == 1
+    assert "never closed" in capsys.readouterr().out
+    assert not manifest.exists()

@@ -40,6 +40,17 @@ CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunct
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
 HEADING = re.compile(r"#{1,6} ")
+INDENT = re.compile(r"[ \t]*")
+
+
+def _columns(whitespace: str) -> int:
+    return len(whitespace.expandtabs(4))
+
+
+def _dedent(line: str, columns: int) -> str:
+    """Take ``columns`` columns of indentation off a line (tabs count to the next multiple of four), or all it has."""
+    leading = INDENT.match(line)[0]
+    return leading.expandtabs(4)[columns:] + line[len(leading) :]
 
 
 def extract_blocks(path: Path) -> List[Tuple[str, str]]:
@@ -49,7 +60,8 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
     fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
-    that holds backticks (``` `x` ``` in a sentence) is inline code, not a fence.
+    that holds backticks (``` `x` ``` in a sentence) is inline code, not a fence. A closing fence is indented by at most three
+    columns more than the opening one, so a line of backticks indented deeper inside a block is text of the block.
 
     As in CommonMark, a fence indented by four columns or more is a fence only inside a list item (then its code is dedented
     by the indent of the opening fence); anywhere else it is an indented code block and is not looked at. A list lasts
@@ -66,7 +78,7 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
         if fence is None:
             opening = FENCE.match(line)
             inline = opening and opening["marker"][0] == "`" and "`" in opening["info"]
-            if opening and not inline and (len(opening["indent"].expandtabs(4)) < 4 or in_list):
+            if opening and not inline and (_columns(opening["indent"]) < 4 or in_list):
                 marker, language = opening["marker"], opening["info"].strip()
                 fence, current, opened_at = (
                     (marker[0], len(marker), language.startswith("python"), opening["indent"]),
@@ -85,14 +97,15 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
                 after_blank = True
             continue
         character, length, is_python, indent = fence
-        if re.match(rf"^[ \t]*{re.escape(character)}{{{length},}}\s*$", line):
+        closing = re.match(rf"^([ \t]*){re.escape(character)}{{{length},}}\s*$", line)
+        if closing and _columns(closing[1]) <= _columns(indent) + 3:
             if is_python:
                 n = counter.get(heading, 0)
                 counter[heading] = n + 1
                 blocks.append((f"{path.relative_to(ROOT).as_posix()}::{heading}::{n}", "\n".join(current)))
             fence = None
         elif is_python:
-            current.append(line[len(indent) :] if line.startswith(indent) else line.lstrip())
+            current.append(_dedent(line, _columns(indent)))
     if fence is not None:
         raise ValueError(f"{path.name}: the block opened at line {opened_at} is never closed")
     return blocks
@@ -181,9 +194,12 @@ def verify() -> int:
 
 def update() -> int:
     manifest = load_manifest()
-    updated = {
-        k: {"hash": digest(c), "check": manifest.get(k, {}).get("check", KIND_STATIC)} for k, c in current_blocks().items()
-    }
+    try:
+        blocks = current_blocks()
+    except ValueError as e:
+        print(f"BROKEN DOC     {e}")
+        return 1
+    updated = {k: {"hash": digest(c), "check": manifest.get(k, {}).get("check", KIND_STATIC)} for k, c in blocks.items()}
     MANIFEST.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"manifest updated: {len(updated)} blocks")
     return verify()

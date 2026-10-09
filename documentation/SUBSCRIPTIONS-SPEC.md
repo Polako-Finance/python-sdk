@@ -140,8 +140,9 @@ Behaviour rules:
 - A read timeout is retried too. That is safe only because the server replays a request with a key it has already seen, so
   the repeat returns the same subscription instead of creating a second one. Every attempt counts against the endpoint's
   limit of 20 requests per 60 seconds. There is no overall deadline: with the defaults (30 s timeout, three attempts, waits of
-  0.5 s and 1 s, or the server's `Retry-After` up to 8 s each) a call that keeps failing takes up to about 106 s, and more if
-  `httpx` spends its timeout in several phases of one attempt.
+  0.5 s and 1 s, or the server's `Retry-After` up to 8 s each) a call that keeps failing takes at least about 106 s, and more because `httpx` applies the
+  timeout to each phase of one attempt (connect, write, read) and name resolution adds its own time; a merchant who sets a
+  deadline of their own should set it well above that.
 - Management methods need `company_id` and `api_key` like `create_subscription` and raise `ConfigurationError`
   before any request otherwise; the key goes in the `company_api_key` header and nothing else is signed. Arguments are checked
   before any request and raise `ValueError`: `subscription_id` is a `UUID` or a string that is one; `limit` is 1 to 100;
