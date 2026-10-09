@@ -132,7 +132,7 @@
     "check": "static"
   },
   "examples/subscription_management_example.py::file::0": {
-    "hash": "c63f3cded2cccd83",
+    "hash": "e42fef010ae99dc3",
     "check": "static"
   }
 }

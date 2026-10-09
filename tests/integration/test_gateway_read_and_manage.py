@@ -113,6 +113,64 @@ async def test_the_charge_history_and_the_journal_follow_what_happened(gateway_s
     ]
 
 
+@pytest.mark.asyncio
+async def test_the_journal_carries_what_the_server_records_with_each_entry(gateway_server, merchant_client, merchant_receiver):
+    """Observed on the real server: the details of a registration, of a charge and of a cancellation, none for a pause."""
+    async with merchant_client as client:
+        subscription_id = await create_active(gateway_server, client, merchant_receiver)
+        await gateway_server.charge(subscription_id)
+        await client.pause_subscription(subscription_id)
+        await client.resume_subscription(subscription_id)
+        await client.cancel_subscription(subscription_id)
+
+        events = {event.event_type: event for event in (await client.get_subscription(subscription_id)).events}
+
+    created, charged = events["created"].payload, events["charge_succeeded"].payload
+    assert set(created) == {"card_id", "masked_pan", "card_brand", "next_charge_at"}
+    assert set(charged) == {"order_id", "charge_date", "result_code"} and charged["result_code"] == "000"
+    assert events["paused"].payload is None and events["resumed"].payload is None
+    assert events["cancelled"].payload == {"card_revoked": True}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_charge_is_journaled_with_its_reason_and_then_past_due(
+    gateway_server, merchant_client, merchant_receiver
+):
+    async with merchant_client as client:
+        subscription_id = await create_active(gateway_server, client, merchant_receiver)
+        await gateway_server.charge(subscription_id, succeeded=False, error_class="insufficient_funds")
+
+        events = {event.event_type: event for event in (await client.get_subscription(subscription_id)).events}
+
+    assert set(events["charge_failed"].payload) == {"order_id", "charge_date", "result_code", "error_class"}
+    assert events["charge_failed"].payload["error_class"] == "insufficient_funds"
+    assert events["past_due"].payload is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_releases_the_card_and_ends_the_charges(gateway_server, merchant_client, merchant_receiver):
+    async with merchant_client as client:
+        subscription_id = await create_active(gateway_server, client, merchant_receiver)
+        before = await client.get_subscription(subscription_id)
+        await client.cancel_subscription(subscription_id)
+
+        after = await client.get_subscription(subscription_id)
+
+    assert before.saved_card.status == "active" and before.next_charge_at is not None
+    assert after.saved_card.status == "revoked" and after.saved_card.masked_pan == before.saved_card.masked_pan
+    assert after.next_charge_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_card_registered_through_the_processor_has_no_expiry_to_show(gateway_server, merchant_client):
+    async with merchant_client as client:
+        subscription_id = await create_active(gateway_server, client)
+
+        card = (await client.get_subscription(subscription_id)).saved_card
+
+    assert card.pan_expiry is None and card.card_brand
+
+
 # ---------------------------------------------------------------------------
 # A list
 # ---------------------------------------------------------------------------

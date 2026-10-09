@@ -242,7 +242,9 @@ class GatewayTestServer:
         assert subscription.status in ("active", "paused", "past_due"), f"cannot cancel a {subscription.status} one"
         subscription.status = "cancelled"
         subscription.next_charge_at = None
-        self._note(subscription, "cancelled")
+        if subscription.card is not None:
+            subscription.card["status"] = "revoked"  # no other live subscription uses it
+        self._note(subscription, "cancelled", {"card_revoked": True})
         return await self.send_webhook(subscription, {"event": "cancelled", **self._lifecycle_payload(subscription)})
 
     def _note(self, subscription: Subscription, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
@@ -261,19 +263,30 @@ class GatewayTestServer:
             "id": str(uuid4()),
             "maskedPan": f"{generate_random_digit_string(6)}******{generate_random_digit_string(4)}",
             "cardBrand": "VISA",
-            "panExpiry": "12/35",
+            "panExpiry": None,  # the processor does not send an expiry
             "status": "active",
         }
-        self._note(subscription, "created")
+        self._note(
+            subscription,
+            "created",
+            {
+                "card_id": subscription.card["id"],
+                "masked_pan": subscription.card["maskedPan"],
+                "card_brand": subscription.card["cardBrand"],
+                "next_charge_at": subscription.next_charge_at.isoformat(),
+            },
+        )
 
     def _book_charge(self, subscription: Subscription, succeeded: bool, amount: Optional[Decimal], error_class: str) -> None:
         """One scheduled charge, in the history and in the journal."""
         now = datetime.now(timezone.utc)
+        order_id, charge_date = generate_readable_string(12), now.date().isoformat()
+        details = {"order_id": order_id, "charge_date": charge_date}
         subscription.charges.append(
             {
                 "id": str(uuid4()),
-                "chargeDate": now.date().isoformat(),
-                "orderId": generate_readable_string(12),
+                "chargeDate": charge_date,
+                "orderId": order_id,
                 "status": "succeeded" if succeeded else "failed",
                 "resultCode": "000" if succeeded else "051",
                 "errorClass": None if succeeded else error_class,
@@ -290,9 +303,9 @@ class GatewayTestServer:
         if succeeded:
             subscription.last_charged_at = now
             subscription.next_charge_at = now + timedelta(days=INTERVAL_DAYS[subscription.billing_interval])
-            self._note(subscription, "charge_succeeded")
+            self._note(subscription, "charge_succeeded", {**details, "result_code": "000"})
         else:
-            self._note(subscription, "charge_failed")
+            self._note(subscription, "charge_failed", {**details, "result_code": "051", "error_class": error_class})
             self._note(subscription, "past_due")
 
     @staticmethod
@@ -402,7 +415,9 @@ class GatewayTestServer:
         try:
             company_id = UUID(request.match_info["company_id"])
         except ValueError:
-            return _error(422, "company_id is not a valid UUID")
+            return _invalid(
+                "path", "company_id", "uuid_parsing", "Input should be a valid UUID", request.match_info["company_id"]
+            )
         idempotency_key = request.headers.get("Idempotency-Key", "").strip()
         if not idempotency_key:
             return _error(422, "Idempotency-Key header is required")
@@ -422,7 +437,7 @@ class GatewayTestServer:
 
         # 3. The rules of the subscription service.
         if not self.subscriptions_enabled:
-            return _error(409, "Subscriptions are not enabled for this company.")
+            return _error(409, "Subscriptions are not enabled for this company")
         replay = self._replies.get((company_id, idempotency_key))
         if replay is not None:
             return web.json_response(replay, status=201)
@@ -465,7 +480,12 @@ class GatewayTestServer:
         try:
             company_id = UUID(request.match_info["company_id"])
         except ValueError:
-            return _error(422, "company_id is not a valid UUID"), None
+            return (
+                _invalid(
+                    "path", "company_id", "uuid_parsing", "Input should be a valid UUID", request.match_info["company_id"]
+                ),
+                None,
+            )
         api_key = request.headers.get("company_api_key", "").strip()
         if not api_key:
             return _error(401, "Authentication required."), None
@@ -481,7 +501,16 @@ class GatewayTestServer:
         try:
             subscription_id = UUID(request.match_info["subscription_id"])
         except ValueError:
-            return _error(422, "subscription_id is not a valid UUID"), None
+            return (
+                _invalid(
+                    "path",
+                    "subscription_id",
+                    "uuid_parsing",
+                    "Input should be a valid UUID",
+                    request.match_info["subscription_id"],
+                ),
+                None,
+            )
         subscription = self.subscriptions.get(subscription_id)
         if subscription is None:
             return _error(404, "Subscription not found"), None
@@ -530,9 +559,9 @@ class GatewayTestServer:
             if refusal is not None:
                 return refusal
             if not self.subscriptions_enabled:
-                return _error(409, "Subscriptions are not enabled for this company.")
+                return _error(409, "Subscriptions are not enabled for this company")
             if subscription.status not in CHANGE_FROM[action]:
-                return _error(409, f"Subscription is {subscription.status}; it cannot be changed with {action}.")
+                return _error(409, "Subscription status does not allow this operation")
             if action == "pause":
                 subscription.status = "paused"
                 self._note(subscription, "paused")
@@ -571,6 +600,16 @@ class GatewayTestServer:
 
 def _error(status: int, detail: Any) -> web.Response:
     return web.json_response({"detail": detail}, status=status)
+
+
+def _invalid(
+    place: str, name: str, kind: str, message: str, value: Any, context: Optional[Dict[str, Any]] = None, *, location_tail=()
+) -> web.Response:
+    """A 422 as the server's framework writes it: a list of problems, each with its type, place, message and input."""
+    problem: Dict[str, Any] = {"type": kind, "loc": [place, name, *location_tail], "msg": message, "input": value}
+    if context:
+        problem["ctx"] = context
+    return web.json_response({"detail": [problem]}, status=422)
 
 
 def _http_url(value: Any) -> bool:
@@ -708,25 +747,41 @@ class ListQuery:
 
 def _read_list_query(query) -> Tuple[Optional[ListQuery], Optional[web.Response]]:
     """Read the query string of a list request; the answer to give instead if it is not valid."""
-    try:
-        limit, offset = int(query.get("limit", "10")), int(query.get("offset", "0"))
-    except ValueError:
-        return None, _error(422, "limit and offset must be integers")
-    if not 1 <= limit <= 100 or offset < 0:
-        return None, _error(422, "limit must be 1 to 100 and offset must not be negative")
+    limit_text, offset_text = query.get("limit", "10"), query.get("offset", "0")
+    for name, text, lowest, highest in (("limit", limit_text, 1, 100), ("offset", offset_text, 0, None)):
+        try:
+            number = int(text)
+        except ValueError:
+            return None, _invalid(
+                "query", name, "int_parsing", "Input should be a valid integer, unable to parse string as an integer", text
+            )
+        if number < lowest:
+            return None, _invalid(
+                "query", name, "greater_than_equal", f"Input should be greater than or equal to {lowest}", text, {"ge": lowest}
+            )
+        if highest is not None and number > highest:
+            return None, _invalid(
+                "query", name, "less_than_equal", f"Input should be less than or equal to {highest}", text, {"le": highest}
+            )
+    limit, offset = int(limit_text), int(offset_text)
     statuses, intervals = query.getall("status", []), query.getall("billing_interval", [])
-    if any(value not in SUBSCRIPTION_STATUSES for value in statuses):
-        return None, _error(422, f"status must be one of {', '.join(SUBSCRIPTION_STATUSES)}")
-    if any(value not in BILLING_INTERVALS for value in intervals):
-        return None, _error(422, f"billing_interval must be one of {', '.join(BILLING_INTERVALS)}")
+    for name, values, allowed in (
+        ("status", statuses, SUBSCRIPTION_STATUSES),
+        ("billing_interval", intervals, BILLING_INTERVALS),
+    ):
+        for index, value in enumerate(values):
+            if value not in allowed:
+                quoted = [f"'{item}'" for item in allowed]
+                message = f"Input should be {', '.join(quoted[:-1])} or {quoted[-1]}"
+                return None, _invalid("query", name, "enum", message, value, location_tail=[index])
     sort_by, sort_order = query.get("sort_by") or "created_at", query.get("sort_order") or "desc"
     if sort_by not in SORT_FIELDS:
         return None, _error(400, f"Invalid sort_by '{sort_by}'. Allowed values: {sorted(SORT_FIELDS)}.")
     if sort_order not in ("asc", "desc"):
         return None, _error(400, f"Invalid sort_order '{sort_order}'. Allowed values: ['asc', 'desc'].")
     try:
-        date_from = _read_bound(query.get("date_from"), end_of_day=False)
-        date_to = _read_bound(query.get("date_to"), end_of_day=True)
+        date_from = _read_bound("date_from", query.get("date_from"), end_of_day=False)
+        date_to = _read_bound("date_to", query.get("date_to"), end_of_day=True)
     except ValueError as error:
         return None, _error(400, str(error))
     return (
@@ -735,14 +790,16 @@ def _read_list_query(query) -> Tuple[Optional[ListQuery], Optional[web.Response]
     )
 
 
-def _read_bound(value: Optional[str], *, end_of_day: bool) -> Optional[datetime]:
+def _read_bound(name: str, value: Optional[str], *, end_of_day: bool) -> Optional[datetime]:
     """A day or a moment (ISO 8601) as an instant; a bare day means its start, or its end for an upper bound."""
     if value is None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        raise ValueError("Invalid ISO 8601 format. Expected: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[Z|+HH:MM].") from None
+        raise ValueError(
+            f"Invalid ISO 8601 format of {name}. Expected: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[Z|\u00b1HH:MM]."
+        ) from None
     if "T" not in value and end_of_day:
         parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)

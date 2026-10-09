@@ -18,6 +18,7 @@ This server is the part of your system a person (or your support tool) uses. Put
 can reach it can cancel your customers' subscriptions.
 """
 
+import json
 from contextlib import contextmanager
 from typing import Iterator, Optional
 from uuid import UUID
@@ -44,6 +45,14 @@ def new_client() -> PolakoClient:
     return PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY)
 
 
+def reason_of(error: HttpRequestError) -> str:
+    """The reason the gateway gave, from its answer {"detail": "..."}; the whole answer if it looks otherwise."""
+    try:
+        return str(json.loads(error.response_body)["detail"])
+    except (ValueError, KeyError, TypeError):
+        return error.response_body
+
+
 @contextmanager
 def as_http_answers() -> Iterator[None]:
     """Turn what the SDK raises into the answer this server gives."""
@@ -56,7 +65,7 @@ def as_http_answers() -> Iterator[None]:
     except ConflictError as error:
         # Not in a status that allows the change (resuming an active subscription, say), or subscriptions are switched
         # off for your company. The body of the answer says which.
-        raise HTTPException(status_code=409, detail=error.response_body)
+        raise HTTPException(status_code=409, detail=reason_of(error))
     except RateLimitedError:
         raise HTTPException(status_code=429, detail="Too many requests, try again in a minute")
     except HttpRequestError as error:
