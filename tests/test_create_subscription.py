@@ -257,6 +257,7 @@ async def test_missing_configuration_fails_before_any_request(gateway, credentia
     "overrides",
     [
         {"amount": Decimal("0")},
+        {"amount": Decimal("9.999")},
         {"customer_email": ""},
         {"success_url": "ftp://x"},
         {"billing_interval": "fortnightly"},
@@ -312,3 +313,26 @@ async def test_a_malformed_success_body_is_a_request_error(gateway, subscription
     async with subscription_client as client:
         with pytest.raises(HttpRequestError):
             await client.create_subscription(**make_subscribe_args())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {},
+        {"registrationForm": make_redirect_form_response()},
+        {**make_subscribe_response(), "subscriptionId": None},
+        {**make_subscribe_response(), "subscriptionId": "not-a-uuid"},
+        {"subscriptionId": str(uuid4())},
+        {**make_subscribe_response(), "registrationForm": None},
+    ],
+    ids=["nothing", "no-id", "null-id", "bad-id", "no-form", "null-form"],
+)
+async def test_an_answer_without_an_id_or_a_form_is_a_request_error_at_once(gateway, subscription_client, broken):
+    gateway.respond(status=201, body=broken)
+
+    with pytest.raises(HttpRequestError) as caught:
+        async with subscription_client:
+            await subscription_client.create_subscription(**make_subscribe_args())
+
+    assert isinstance(caught.value.__cause__, ValueError)

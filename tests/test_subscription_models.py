@@ -17,7 +17,7 @@ from tests.factories import (
     make_subscribe_request,
     make_subscribe_response,
 )
-from tests.generators import generate_readable_string
+from tests.generators import generate_random_decimal, generate_readable_string
 
 FORM_POST_FIELDS = [
     ("action", "action"),
@@ -108,6 +108,26 @@ def test_response_with_an_unknown_form_raises_the_specific_error():
         SubscribeResponse.from_json(json.dumps(raw))
 
 
+BROKEN_ANSWERS = {
+    "nothing": lambda raw: {},
+    "no id": lambda raw: {"registrationForm": raw["registrationForm"]},
+    "null id": lambda raw: {**raw, "subscriptionId": None},
+    "id that is not a UUID": lambda raw: {**raw, "subscriptionId": generate_readable_string(12)},
+    "id that is a number": lambda raw: {**raw, "subscriptionId": 12345},
+    "no form": lambda raw: {"subscriptionId": raw["subscriptionId"]},
+    "null form": lambda raw: {**raw, "registrationForm": None},
+    "form that is text": lambda raw: {**raw, "registrationForm": generate_readable_string(8)},
+}
+
+
+@pytest.mark.parametrize("make_broken", list(BROKEN_ANSWERS.values()), ids=list(BROKEN_ANSWERS))
+def test_half_an_answer_is_refused_not_turned_into_empty_values(make_broken):
+    broken = make_broken(make_subscribe_response())
+
+    with pytest.raises(ValueError):
+        SubscribeResponse.from_json(json.dumps(broken))
+
+
 def test_request_is_sent_in_camel_case_with_a_string_amount():
     args = make_subscribe_args()
 
@@ -143,6 +163,12 @@ def test_valid_request_passes_validation():
         ({"amount": Decimal("NaN")}, "amount"),
         ({"amount": Decimal("Infinity")}, "amount"),
         ({"amount": 990.5}, "amount"),
+        ({"amount": Decimal("9.999")}, "decimal places"),
+        ({"amount": Decimal("0.001")}, "decimal places"),
+        ({"amount": Decimal("1E-3")}, "decimal places"),
+        ({"amount": Decimal("9.9990")}, "decimal places"),
+        ({"amount": Decimal("0.0010")}, "decimal places"),
+        ({"amount": generate_random_decimal(3, 2) + Decimal("0.005")}, "decimal places"),
         ({"currency": ""}, "currency"),
         ({"merchant_subscription_ref": ""}, "merchant_subscription_ref"),
         ({"merchant_subscription_ref": "x" * 129}, "merchant_subscription_ref"),
@@ -155,6 +181,23 @@ def test_valid_request_passes_validation():
 def test_invalid_request_is_rejected(overrides, message):
     with pytest.raises(ValueError, match=message):
         make_subscribe_request(**overrides).validate()
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [
+        Decimal("990"),
+        Decimal("990.0"),
+        Decimal("990.00"),
+        Decimal("990.000"),
+        Decimal("1E+3"),
+        Decimal("0.01"),
+        generate_random_decimal(3, 2),
+        generate_random_decimal(1, 1),
+    ],
+)
+def test_an_amount_with_at_most_two_decimal_places_is_accepted(amount):
+    make_subscribe_request(amount=amount).validate()
 
 
 def test_reference_of_128_characters_is_accepted():

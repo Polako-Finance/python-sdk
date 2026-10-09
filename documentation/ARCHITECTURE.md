@@ -25,7 +25,7 @@ All under `src/polako/sdk/`; the package exports its public names from `__init__
 | `_async_client.py` | The HTTP transport: headers, (de)serialization, mapping of statuses to exceptions, retries of requests that carry an `Idempotency-Key` |
 | `_exceptions.py` | Exceptions: by HTTP status (`NotFoundError` for 404 among them), configuration, webhook signature and payload |
 | `_serializable.py` | Dataclass (de)serialization with wire aliases (`alias` metadata) and a decode hook |
-| `_decoding.py` | Reading the values of a server response: the strict readers (UUID, text, count, amount, time, date, object), the tolerant enum reader (an unknown value stays the raw text), nested objects and lists, and `StrictModel` (required fields must be there). Models use it; it holds no model |
+| `_decoding.py` | Reading the values of a server response: the strict readers (UUID, text, count, amount, date, object, and time through `parse_moment`, the one reader of every time from the server: any offset style, any fraction, UTC when there is no zone), the tolerant enum reader (an unknown value stays the raw text), nested objects and lists, and `StrictModel` (required fields must be there). Models use it; it holds no model |
 | `_order.py` | Payment models |
 | `_subscription.py` | The subscription request and response, the three registration forms, `SubscriptionCreated` |
 | `_subscription_list.py` | The operation "list subscriptions": what is asked (`SubscriptionListQuery`: the filters, sorting and page, checked, turned into query parameters) and what comes back (`SubscriptionSummary`, `SubscriptionPage`, the list response). Models are grouped by operation (as in the server's `model/subscription/`), not by request and response |

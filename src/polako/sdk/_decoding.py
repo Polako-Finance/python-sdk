@@ -4,8 +4,9 @@ A missing or malformed required value is a ``ValueError`` (the client reports it
 value of a known enum stays the raw string, and unknown fields are ignored.
 """
 
+import re
 from dataclasses import dataclass, field, fields
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Callable, Dict, Optional, Tuple, Type
@@ -45,12 +46,41 @@ def read_money(value: Any) -> Decimal:
     return amount
 
 
+_MOMENT = re.compile(
+    r"(?P<day>\d{4}-\d{2}-\d{2})"
+    r"(?:[T ](?P<clock>\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<zone>Z|[+-]\d{2}(?::?\d{2})?)?)?"
+)
+
+
+def parse_moment(text: str) -> datetime:
+    """
+    A time as ISO 8601 text, always timezone-aware. The one reader of every time the SDK gets from the server.
+
+    It reads what Python 3.10's ``fromisoformat`` does not: a trailing ``Z``, an offset written ``+02``, ``+0200`` or
+    ``+02:00``, and a fraction of any number of digits (kept to the microsecond). A time without a zone is UTC, and a bare
+    day is its midnight.
+
+    Raises:
+        ValueError: If the text is not a time
+    """
+    match = _MOMENT.fullmatch(text)
+    if match is None:
+        raise ValueError(f"not an ISO 8601 time: {text!r}")
+    zone = match["zone"] or "Z"
+    if zone == "Z":
+        offset = "+00:00"
+    else:
+        digits = zone[1:].replace(":", "")
+        offset = f"{zone[0]}{digits[:2]}:{digits[2:] or '00'}"
+    fraction = (match["fraction"] or "")[:6].ljust(6, "0")
+    return datetime.fromisoformat(f"{match['day']}T{match['clock'] or '00:00:00'}.{fraction}{offset}")
+
+
 def read_moment(value: Any) -> datetime:
-    """A time as ISO 8601 text; one without a zone is taken as UTC, so every result is timezone-aware."""
+    """A time in a response field: ISO 8601 text, read by ``parse_moment``."""
     if not isinstance(value, str):
         raise ValueError(f"expected a time as text, got {value!r}")
-    moment = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+    return parse_moment(value)
 
 
 def read_day(value: Any) -> date:

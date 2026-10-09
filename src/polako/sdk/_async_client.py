@@ -28,6 +28,11 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     return seconds if seconds >= 0 else None
 
 
+# A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+
+
 class AsyncHttpClient:
     """
     Async HTTP client wrapper for the payment gateway API.
@@ -36,8 +41,10 @@ class AsyncHttpClient:
     Request and response bodies are serialized/deserialized using Serializable models.
 
     Retries: a request is retried only when it carries an ``Idempotency-Key`` header, because only then a repeat cannot
-    do the work twice. Such a request is retried on HTTP 429, HTTP 5xx and network errors, with the same key and body,
-    up to ``max_attempts`` attempts in total. Every other request is sent exactly once.
+    do the work twice. Such a request is retried on HTTP 429, 500, 502, 503 and 504 and on network errors that a repeat can cure
+    (timeouts, connection and protocol failures), with the same key and body, up to ``max_attempts`` attempts in total. A status
+    such as 501 or 505, an unsupported address or too many redirects are not cured by a repeat and are raised at once. Every
+    other request is sent exactly once.
     """
 
     def __init__(
@@ -212,7 +219,7 @@ class AsyncHttpClient:
                 try:
                     response = await self._send(method, url, json_body, request_headers, params)
                 except httpx.RequestError as e:
-                    if is_last:
+                    if is_last or not isinstance(e, RETRYABLE_ERRORS):
                         raise HttpClientError(f"Network error during request: {e}") from e
                     await _sleep(self._backoff(attempt))
                     continue
@@ -251,7 +258,7 @@ class AsyncHttpClient:
 
     @staticmethod
     def _is_retryable(status_code: int) -> bool:
-        return status_code == 429 or status_code >= 500
+        return status_code in RETRYABLE_STATUSES
 
     def _backoff(self, attempt: int) -> float:
         """Exponential wait before retry number `attempt`, capped."""

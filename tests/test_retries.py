@@ -238,3 +238,78 @@ async def test_payment_methods_are_never_retried(client, gateway, sleeps, platfo
 
     assert len(gateway.requests) == 2
     assert sleeps == []
+
+
+RETRIED_STATUSES = [429, 500, 502, 503, 504]
+NEVER_RETRIED_STATUSES = [501, 505, 506, 507, 508, 510, 511]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", RETRIED_STATUSES)
+async def test_a_keyed_request_is_retried_for_these_statuses_and_only_these(gateway, sleeps, keyed, success, status):
+    gateway.sequence({"status": status, "body": {}}, success)
+
+    async with http_client() as http:
+        await http.post("/v1/anything", request_body={generate_readable_string(6): 1}, headers=keyed)
+
+    assert len(gateway.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", NEVER_RETRIED_STATUSES)
+async def test_a_status_that_a_repeat_cannot_cure_is_not_retried_even_with_a_key(gateway, sleeps, keyed, success, status):
+    gateway.sequence({"status": status, "body": {}}, success)
+
+    with pytest.raises(ServerError):
+        await post(keyed)
+
+    assert len(gateway.requests) == 1
+    assert sleeps == []
+
+
+def _transport_errors():
+    text = generate_readable_string(8)
+    return [
+        httpx.ConnectError(text),
+        httpx.ConnectTimeout(text),
+        httpx.ReadTimeout(text),
+        httpx.WriteTimeout(text),
+        httpx.PoolTimeout(text),
+        httpx.ReadError(text),
+        httpx.WriteError(text),
+        httpx.CloseError(text),
+        httpx.RemoteProtocolError(text),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", _transport_errors(), ids=lambda error: type(error).__name__)
+async def test_a_keyed_request_is_retried_after_a_network_failure_a_repeat_can_cure(gateway, sleeps, keyed, success, error):
+    gateway.sequence(error, success)
+
+    async with http_client() as http:
+        await http.post("/v1/anything", request_body={generate_readable_string(6): 1}, headers=keyed)
+
+    assert len(gateway.requests) == 2
+
+
+def _failures_a_repeat_cannot_cure():
+    text = generate_readable_string(8)
+    return [
+        httpx.UnsupportedProtocol(text),
+        httpx.TooManyRedirects(text),
+        httpx.DecodingError(text),
+        httpx.LocalProtocolError(text),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", _failures_a_repeat_cannot_cure(), ids=lambda error: type(error).__name__)
+async def test_a_failure_that_a_repeat_cannot_cure_is_not_retried_even_with_a_key(gateway, sleeps, keyed, success, error):
+    gateway.sequence(error, success)
+
+    with pytest.raises(HttpClientError):
+        await post(keyed)
+
+    assert len(gateway.requests) == 1
+    assert sleeps == []

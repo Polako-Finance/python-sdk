@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from polako.sdk._constants import BillingInterval
+from polako.sdk._decoding import StrictModel, read_uuid, wire_field
 from polako.sdk._serializable import Serializable
 
 MERCHANT_REF_MAX_LENGTH = 128
@@ -86,6 +87,14 @@ def _check_http_url(name: str, value: str) -> None:
         raise ValueError(f"'{name}' must be a valid http or https URL")
 
 
+def _decimal_places(amount: Decimal) -> int:
+    """How many decimal places the value really needs: ``990.000`` needs none, ``9.999`` needs three."""
+    _, digits, exponent = amount.as_tuple()
+    significant = "".join(map(str, digits)).rstrip("0")
+    trailing_zeros = len(digits) - len(significant)
+    return -int(exponent) - trailing_zeros
+
+
 @dataclass
 class SubscribeRequest(Serializable):
     """The body of a request to create a subscription; sent to the server with camelCase names."""
@@ -114,6 +123,8 @@ class SubscribeRequest(Serializable):
 
         if not isinstance(self.amount, Decimal) or not self.amount.is_finite() or self.amount <= 0:
             raise ValueError("'amount' must be a finite Decimal greater than zero")
+        if _decimal_places(self.amount) > 2:
+            raise ValueError("'amount' must have at most two decimal places: the server keeps cents and would round the rest")
 
         if not isinstance(self.currency, str) or not self.currency:
             raise ValueError("'currency' is required")
@@ -130,12 +141,17 @@ class SubscribeRequest(Serializable):
         _check_http_url("error_url", self.error_url)
 
 
-@dataclass
-class SubscribeResponse(Serializable):
-    """The server response to a subscription request; names on the wire are camelCase."""
+@dataclass(frozen=True)
+class SubscribeResponse(StrictModel):
+    """
+    The server response to a subscription request; names on the wire are camelCase.
 
-    subscription_id: UUID = field(metadata={"alias": "subscriptionId", "decode": UUID})
-    registration_form: RegistrationForm = field(metadata={"alias": "registrationForm", "decode": parse_registration_form})
+    Read strictly: an answer without the subscription ID or the form, or with a malformed one, is refused here (a
+    ``ValueError``, which the client reports as an ``HttpRequestError``) instead of becoming a result full of empty values.
+    """
+
+    subscription_id: UUID = wire_field(read_uuid, "subscriptionId")
+    registration_form: RegistrationForm = wire_field(parse_registration_form, "registrationForm")
 
 
 @dataclass(frozen=True)

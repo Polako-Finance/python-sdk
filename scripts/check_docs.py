@@ -37,23 +37,36 @@ CLIENT = sdk.PolakoClient
 CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunction) if not name.startswith("_")}
 
 
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*(\S*)")
+
+
 def extract_blocks(path: Path) -> List[Tuple[str, str]]:
-    """Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it."""
+    """
+    Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it.
+
+    Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
+    a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it.
+    """
     blocks: List[Tuple[str, str]] = []
-    heading, counter, current = "", {}, None
+    heading, counter = "", {}
+    fence, current = None, []  # fence: (character, length, is_python) while inside a fenced block
     for line in path.read_text(encoding="utf-8").splitlines():
-        if current is None:
-            if line.startswith("```python"):
-                current = []
+        if fence is None:
+            opening = FENCE.match(line)
+            if opening:
+                marker = opening.group(1)
+                fence, current = (marker[0], len(marker), opening.group(2).startswith("python")), []
             elif re.match(r"#{1,6} ", line):
                 heading = line.lstrip("# ").strip()
             continue
-        if line.startswith("```"):
-            n = counter.get(heading, 0)
-            counter[heading] = n + 1
-            blocks.append((f"{path.relative_to(ROOT).as_posix()}::{heading}::{n}", "\n".join(current)))
-            current = None
-        else:
+        character, length, is_python = fence
+        if re.match(rf"^ {{0,3}}{re.escape(character)}{{{length},}}\s*$", line):
+            if is_python:
+                n = counter.get(heading, 0)
+                counter[heading] = n + 1
+                blocks.append((f"{path.relative_to(ROOT).as_posix()}::{heading}::{n}", "\n".join(current)))
+            fence = None
+        elif is_python:
             current.append(line)
     return blocks
 

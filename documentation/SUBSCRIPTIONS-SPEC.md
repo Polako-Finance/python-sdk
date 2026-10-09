@@ -1,6 +1,6 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.14** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
+**Status: DRAFT v0.15** — agreed in principle on 2026-10-08. Implemented so far: exceptions by status, the retry
 gate, wire aliases, the models, `create_subscription`, the webhook signature check, `parse_subscription_webhook` and
 `parse_registration_failed` and `render_registration_form`, plus the README section and the example. Scope: **creating a subscription, full cycle**
 (create, render the 3DS form, receive webhooks). Subscription management (read, list, pause, resume, cancel) is implemented too, against the server routes that accept the
@@ -93,7 +93,8 @@ Behaviour rules:
 - Webhook signatures are verified over the raw body exactly as received, with `hmac.compare_digest`; a forged signature raises
   `WebhookSignatureError` (never `AssertionError`).
 - Arguments are checked before any request and raise `ValueError`: `customer_email` contains `@` and no spaces; `amount` is a
-  finite `Decimal` greater than zero (floats are rejected); `currency` is not empty; `billing_interval` is a
+  finite `Decimal` greater than zero with at most two decimal places (floats are rejected; the server keeps cents, so
+  a third decimal would be silently rounded); `currency` is not empty; `billing_interval` is a
   `BillingInterval` or its string value; `merchant_subscription_ref` is 1 to 128 characters; the three URLs are http or
   https with a host; a given `idempotency_key` is not blank. Everything else is left to the server.
 - `amount` is sent as a plain decimal string (`990.00`, `1000` for `Decimal("1E+3")`), never with an exponent.
@@ -114,17 +115,23 @@ Behaviour rules:
   with nine hidden inputs named `Version`, `MerchantID`, `TerminalID`, `TotalAmount`, `Currency`, `Locale`, `PurchaseTime`,
   `OrderID` and `Signature` (an empty version is sent as `1`); an `HppFormPost` passes the provider's fields through as
   given, in order; a `RedirectForm` is a link, plus a `refresh` redirect when `auto_submit` is on, never a form and never
-  an `<iframe>`. With `auto_submit` on a posted form submits itself with one constant script and has a button inside
+  an `<iframe>`. With `auto_submit` on a posted form submits itself with one constant script (it calls the submit method of the
+  form element itself, so a provider field named `submit` or `action` cannot shadow it) and has a button inside
   `<noscript>`; with it off the page has a visible button and no script (for sites that forbid inline scripts).
 - The helper refuses what could be turned against the customer: the address must be an http or https URL with a host, and
   must contain no whitespace or control characters (`ValueError`); every name, value and address is HTML-escaped; the
   script holds no data from the form; the page loads nothing from elsewhere; anything that is not a registration form is a
   `TypeError`. The input names for `FormPost` are taken from the working reference page of the gateway's own integration
   tools; confirm them against the staging environment before relying on them in production.
-- Times with a trailing `Z` are read as UTC on every supported Python version. An unknown event name is returned, not
-  raised; unknown fields of a known event are ignored.
-- Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 5xx and network errors, bounded, with the same
-  key on every attempt. 4xx other than 429 is never retried. Payment methods are not retried. Management methods are not
+- A time is read the same way everywhere, in webhooks and in management results, on every supported Python version: ISO 8601
+  with a trailing `Z`, a numeric offset (`+02:00`, `+0200`, `+02`) or none (then UTC), with any number of fraction digits
+  (kept to the microsecond). The result is always timezone-aware. An unknown event name is returned, not raised; unknown
+  fields of a known event are ignored.
+- An answer to a subscription request that lacks the subscription ID or the registration form, or holds a value of the wrong
+  kind, is an `HttpRequestError` whose cause is the reason; no result is built from half an answer.
+- Retries apply only to requests carrying an `Idempotency-Key`, only for 429, 500, 502, 503 and 504 and for network errors that a repeat can cure
+  (timeouts, connection and protocol failures), bounded, with the same key on every attempt. 501, 505, an unsupported or refused
+  address and the like are never retried. 4xx other than 429 is never retried. Payment methods are not retried. Management methods are not
   retried either (decision `management-no-retry`).
 - Management methods need `company_id` and `api_key` like `create_subscription` and raise `ConfigurationError`
   before any request otherwise; the key goes in the `company_api_key` header and nothing else is signed. Arguments are checked
@@ -217,3 +224,4 @@ distinguishable from a network error; none of the management methods is retried 
 | 2026-10-09 | v0.12: the design of the management routes is settled: one route per operation serves both the dashboard login and the platform API key (a login wins over a key sent beside it), instead of a second external route per operation. Decision `management-by-api-key` and section Planned rewritten with the routes, the answers for an API key and the facts found while building it: no separate payments route (the detail carries the charge history), cancel does not refund, reading is not gated by the switch, the management routes take no `Idempotency-Key` yet. The server side is built and waits for a release, so the SDK methods are still not written |
 | 2026-10-09 | v0.13: the interface of subscription management is agreed: `get_subscription`, `list_subscriptions` (one page, filters, sorting, `limit`/`offset`), `pause_subscription`, `resume_subscription`, `cancel_subscription` (return `None`); the result models (`SubscriptionPage`, `SubscriptionSummary`, `SubscriptionDetails` with `SubscriptionCustomer`, `SavedCard`, `ChargeAttempt`, `SubscriptionEvent`), the public enums `SubscriptionStatus` and `ChargeAttemptStatus`, and `NotFoundError` for 404. New decisions `management-no-retry` (no retries for any management method, the reason being that a repeated change meets its own result as a 409), `management-not-found`, `management-one-page`, `tolerant-reading`. Interface, Behaviour rules, Scope and the management section updated; nothing is built yet |
 | 2026-10-09 | v0.14: the management methods are implemented as agreed in v0.13: `get_subscription`, `list_subscriptions`, `pause_subscription`, `resume_subscription`, `cancel_subscription`, the result models (`SubscriptionPage`, `SubscriptionSummary`, `SubscriptionDetails` and its parts), the enums `SubscriptionStatus` and `ChargeAttemptStatus` and `NotFoundError`. Models are grouped by operation (`_subscription_list.py`, `_subscription_detail.py`), the argument checks live in `_validation.py` and only check, the reading of server values in `_decoding.py`. Added to the spec what the build settled: 400 stays a plain `HttpRequestError` (the server answers it to a filter or sort field it does not accept); `SubscriptionDetails` has no `customer_id` or `customer_email` of its own; an empty collection for a filter is refused; a time bound is sent in UTC to the second. The README section, `examples/subscription_management_example.py` and the CHANGELOG are written; the code of the README and of the example was run against the gateway emulator. The server release is the only thing pending |
+| 2026-10-09 | v0.15: changes from the review of the pull request, each checked against the code first. Times are read by one reader for webhooks and management results: a time without a zone is UTC (a webhook's `charged_at` used to come back without a zone), and the fraction and the offset may be written in any of the usual ways (Python 3.10 could not read some of them). A subscription answer without an ID or a form, or with a malformed one, is an `HttpRequestError` at once instead of a result full of empty values. The self-submitting form calls the form element's own submit method, so a provider field named `submit` cannot break it. Retries are limited to 429, 500, 502, 503, 504 and to network errors a repeat can cure. `amount` may have at most two decimal places (the server stores cents and rounded a third decimal silently). Decided to leave as it is: the address of the registration form may be http or https; `success` of a failure notification stays `0` or `false`; `company_api_key` keeps its name (the platform's proxy accepts underscores) |

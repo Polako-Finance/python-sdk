@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar, Dict, Optional, Union
 from uuid import UUID
 
+from polako.sdk._decoding import parse_moment
 from polako.sdk._exceptions import (
     ConfigurationError,
     MissingSignatureError,
@@ -244,8 +245,7 @@ def _amount(payload: Dict[str, Any], what: str, field: str) -> Decimal:
 def _moment(payload: Dict[str, Any], what: str, field: str) -> datetime:
     value = _text(payload, what, field)
     try:
-        # Python 3.10 does not read a trailing "Z" as UTC.
-        return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        return parse_moment(value)
     except ValueError:
         raise WebhookPayloadError(f"{what}: '{field}' is not a valid ISO 8601 time") from None
 

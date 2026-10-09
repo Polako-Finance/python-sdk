@@ -91,7 +91,8 @@ def _form_page(action: str, fields: List[Any], auto_submit: bool) -> str:
     script = ""
     if auto_submit:
         button = f"<noscript>{button}</noscript>"
-        script = f'<script>document.getElementById("{FORM_ID}").submit();</script>\n'
+        # The method of the element type itself: a provider field named "submit" would shadow the form's own.
+        script = f'<script>HTMLFormElement.prototype.submit.call(document.getElementById("{FORM_ID}"));</script>\n'
     body = (
         "<p>Continuing to the card registration.</p>\n"
         f'<form id="{FORM_ID}" method="post" action="{target}">\n{inputs}{button}\n</form>\n{script}'

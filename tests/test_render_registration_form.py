@@ -164,8 +164,27 @@ def test_a_posted_form_submits_itself_and_has_a_button_when_scripts_are_off(make
     result = page(form_of(make_response), auto_submit=True)
 
     assert len(result.scripts) == 1
-    assert result.forms[0]["id"] in result.scripts[0] and ".submit()" in result.scripts[0]
+    assert result.forms[0]["id"] in result.scripts[0] and "HTMLFormElement.prototype.submit.call(" in result.scripts[0]
     assert result.buttons == [(True, "submit")]
+
+
+FORM_PROPERTY_NAMES = ["submit", "action", "method", "id", "name", "target", "elements", "length"]
+
+
+@pytest.mark.parametrize("field_name", FORM_PROPERTY_NAMES)
+def test_a_provider_field_named_like_a_form_property_cannot_stop_the_page_from_submitting(field_name):
+    """A field named `submit` replaces the form's submit method for the page's script (`form.submit` becomes the
+    field), so the script calls the method of the form element type itself."""
+    form = form_of(
+        make_hpp_form_response, fields={field_name: generate_readable_string(6), "token": generate_readable_string(8)}
+    )
+
+    result = page(form, auto_submit=True)
+
+    [script] = result.scripts
+    assert "HTMLFormElement.prototype.submit.call(" in script
+    assert ").submit()" not in script
+    assert field_name in {name for _, name, _ in result.inputs}
 
 
 @pytest.mark.parametrize("make_response", [make_form_post_response, make_hpp_form_response])

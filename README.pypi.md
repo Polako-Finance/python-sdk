@@ -186,9 +186,11 @@ async def subscribe():
   `idempotency_key` that was used (a key is generated if you do not pass one).
 - The subscription becomes active only after the customer completes the registration. A failure is reported to your
   error URL; every later charge is reported to your webhook URL.
-- Repeating a request with the same `idempotency_key` returns the same subscription. A request that fails on the
+- Repeating a request with the same `idempotency_key` returns the same subscription. +
   network, with HTTP 429 or with a server error is repeated for you, up to three attempts, with the same key.
 - The endpoint accepts 20 requests per 60 seconds. Beyond that you get a `RateLimitedError` with `retry_after` set.
+- `amount` has at most two decimal places (`990.00`): the gateway keeps cents, so a third decimal is refused with a `ValueError`
+  instead of being rounded.
 - `merchant_subscription_ref` is your own reference to the plan or product (1 to 128 characters). A customer can have
   one live subscription per reference; a second one is a `ConflictError`.
 - `render_registration_form` returns a complete HTML page: a form that posts the customer to the card processor, or a
