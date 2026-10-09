@@ -1,0 +1,138 @@
+{
+  "README.md::Quick Start::0": {
+    "hash": "78350777d2377960",
+    "check": "static"
+  },
+  "README.md::Payment Callback Handling::0": {
+    "hash": "8ef5772669b40a67",
+    "check": "static"
+  },
+  "README.md::Create a subscription and send the customer to the card registration::0": {
+    "hash": "cfb651ee8ab110a7",
+    "check": "static"
+  },
+  "README.md::Read the webhooks::0": {
+    "hash": "38a727d7546d45e8",
+    "check": "static"
+  },
+  "README.md::Read the registration failure::0": {
+    "hash": "43d75d3e79c94307",
+    "check": "static"
+  },
+  "README.md::Managing a subscription::0": {
+    "hash": "8e9a587e3f51eacb",
+    "check": "static"
+  },
+  "README.md::Managing a subscription::1": {
+    "hash": "0ff4f52a015c0e81",
+    "check": "static"
+  },
+  "README.md::Managing a subscription::2": {
+    "hash": "8bbbe1f3c26eee09",
+    "check": "static"
+  },
+  "README.md::Client Options::0": {
+    "hash": "fbb83db6ab5d3787",
+    "check": "static"
+  },
+  "README.md::Error Handling::0": {
+    "hash": "91ed3be70da35388",
+    "check": "static"
+  },
+  "README.md::Custom Customer Address::0": {
+    "hash": "d2d94f99eda8a78e",
+    "check": "static"
+  },
+  "README.md::Multiple Items in Order::0": {
+    "hash": "53b0df8b77aba46c",
+    "check": "static"
+  },
+  "README.md::Context Manager::0": {
+    "hash": "a9563a148580d50c",
+    "check": "static"
+  },
+  "README.pypi.md::Quick Start::0": {
+    "hash": "78350777d2377960",
+    "check": "static"
+  },
+  "README.pypi.md::Payment Callback Handling::0": {
+    "hash": "049784a1c6693b63",
+    "check": "static"
+  },
+  "README.pypi.md::Create a subscription and send the customer to the card registration::0": {
+    "hash": "cfb651ee8ab110a7",
+    "check": "static"
+  },
+  "README.pypi.md::Read the webhooks::0": {
+    "hash": "38a727d7546d45e8",
+    "check": "static"
+  },
+  "README.pypi.md::Read the registration failure::0": {
+    "hash": "43d75d3e79c94307",
+    "check": "static"
+  },
+  "README.pypi.md::Managing a subscription::0": {
+    "hash": "8e9a587e3f51eacb",
+    "check": "static"
+  },
+  "README.pypi.md::Managing a subscription::1": {
+    "hash": "0ff4f52a015c0e81",
+    "check": "static"
+  },
+  "README.pypi.md::Managing a subscription::2": {
+    "hash": "8bbbe1f3c26eee09",
+    "check": "static"
+  },
+  "README.pypi.md::Client Options::0": {
+    "hash": "fbb83db6ab5d3787",
+    "check": "static"
+  },
+  "README.pypi.md::Error Handling::0": {
+    "hash": "91ed3be70da35388",
+    "check": "static"
+  },
+  "README.pypi.md::Custom Customer Address::0": {
+    "hash": "d2d94f99eda8a78e",
+    "check": "static"
+  },
+  "README.pypi.md::Multiple Items in Order::0": {
+    "hash": "38981e1ed6e7fc1f",
+    "check": "static"
+  },
+  "README.pypi.md::Context Manager::0": {
+    "hash": "a9563a148580d50c",
+    "check": "static"
+  },
+  "examples/README.md::Configuration::0": {
+    "hash": "27b3f0f1b213252b",
+    "check": "static"
+  },
+  "examples/README.md::Testing::0": {
+    "hash": "535bd20f83eaa13c",
+    "check": "static"
+  },
+  "examples/README.md::FastAPI Example::0": {
+    "hash": "26150f0c981d682f",
+    "check": "static"
+  },
+  "examples/README.md::Quart Example (Async Flask)::0": {
+    "hash": "401480264b928b9f",
+    "check": "static"
+  },
+  "examples/callback_example.py::file::0": {
+    "hash": "d4a697d54db89312",
+    "check": "static"
+  },
+  "examples/example.py::file::0": {
+    "hash": "30d331dfd11b50f9",
+    "check": "static"
+  },
+  "examples/subscription_example.py::file::0": {
+    "hash": "09231310da871e66",
+    "check": "static"
+  },
+  "examples/subscription_management_example.py::file::0": {
+    "hash": "e42fef010ae99dc3",
+    "check": "static"
+  }
+}

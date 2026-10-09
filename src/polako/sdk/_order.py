@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from polako.sdk._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
+from polako.sdk._decoding import parse_moment
 from polako.sdk._serializable import Serializable
 
 
@@ -103,7 +104,7 @@ class CustomerAddress(Serializable):
         city: City name
         state: State or province
         zip: Postal/ZIP code
-        country: Country name or code
+        country: Two-letter country code, e.g. ``RS`` for Serbia
     """
 
     address: Optional[str]
@@ -193,7 +194,9 @@ class PaymentCallback:
         success: Whether payment was successful
         tx_id: Transaction identifier
         tx_meta: Additional transaction metadata
-        datetime: Payment timestamp
+        datetime: Payment timestamp. Schema 1.1 gives a timezone-aware value (UTC when the gateway sends no zone). The
+            legacy format carries only the minute and no zone, so its value is naive: do not compare the two kinds with
+            each other or with an aware time without handling that
         callback_type: Callback type — "payment" or "refund" (schema 1.1 only)
         session_id: Payment session UUID (schema 1.1 only)
         schema_version: Callback schema version — None for legacy, "1.1" for signed
@@ -298,7 +301,7 @@ class SignedPaymentCallbackRaw(Serializable):
             success=self.status == "success",
             tx_id=self.event_id,
             tx_meta=self.tx_meta,
-            datetime=datetime.fromisoformat(self.timestamp),
+            datetime=parse_moment(self.timestamp),
             callback_type=self.type,
             session_id=self.session_id,
             schema_version=self.schema,

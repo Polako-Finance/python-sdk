@@ -1,29 +1,36 @@
 """Async API client for Polako Finance."""
 
+from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional, TypeVar
-from uuid import UUID
+from typing import Dict, Iterable, List, Optional, TypeVar, Union
+from uuid import UUID, uuid4
 
 from polako.sdk._async_client import AsyncHttpClient
+from polako.sdk._constants import BillingInterval, SubscriptionStatus
+from polako.sdk._exceptions import ConfigurationError
 from polako.sdk._order import (
+    CheckStatusRequest,
     CreateOrderRequest,
     CustomerAddress,
     CustomerInfo,
     InitCustomerInfo,
     OrderDetails,
+    OrderStatusResponse,
     PaymentCallback,
     PaymentCallbackRaw,
     PaymentSessionDetails,
     PaymentUrlRequest,
     PaymentUrlResult,
-    CheckStatusRequest,
-    OrderStatusResponse,
     RefundItem,
     RefundRequest,
     RefundResponse,
     SessionInfo,
     SignedPaymentCallbackRaw,
 )
+from polako.sdk._subscription import SubscribeRequest, SubscribeResponse, SubscriptionCreated
+from polako.sdk._subscription_detail import SubscriptionDetails
+from polako.sdk._subscription_list import SubscriptionListQuery, SubscriptionListResponse, SubscriptionPage
+from polako.sdk._validation import check_subscription_id
 
 T = TypeVar("T")
 
@@ -44,6 +51,8 @@ class AsyncPolakoClient:
         self,
         timeout: float = 30.0,
         test_env: bool = False,
+        company_id: Optional[UUID] = None,
+        api_key: Optional[str] = None,
     ):
         """
         Initialize the async Polako Finance client.
@@ -51,6 +60,9 @@ class AsyncPolakoClient:
         Args:
             timeout: Request timeout in seconds (default: 30.0)
             test_env: If True, use test environment URL; otherwise use production (default: False)
+            company_id: Your company ID. Needed for subscriptions (it is part of the request URL)
+            api_key: The API key of your platform, the same value as the ``secret_key`` of the signed
+                payment methods. Needed for subscriptions; it is sent only with subscription calls
         """
         from polako.sdk._constants import BASE_URL_PROD, BASE_URL_TEST
 
@@ -58,6 +70,13 @@ class AsyncPolakoClient:
             base_url=BASE_URL_TEST if test_env else BASE_URL_PROD,
             timeout=timeout,
         )
+        self._company_id = company_id
+        self._api_key = api_key
+
+    def __repr__(self) -> str:
+        """Show the company ID but never the API key."""
+        key = "'***'" if self._api_key else None
+        return f"{type(self).__name__}(company_id={self._company_id!r}, api_key={key})"
 
     async def __aenter__(self) -> "AsyncPolakoClient":
         """Enter async context manager."""
@@ -96,11 +115,11 @@ class AsyncPolakoClient:
         order.validate()
         customer.validate()
 
-        from polako.sdk._constants import CURRENCIES, LANGUAGES
+        from polako.sdk._constants import CURRENCIES, DEFAULT_LANGUAGE
 
         # Prepare values
         currency = order.currency or next(iter(CURRENCIES))
-        language = order.language or next(iter(LANGUAGES))
+        language = order.language or DEFAULT_LANGUAGE
         total = order.total.quantize(Decimal("0.01"))
 
         # Create signature
@@ -294,6 +313,285 @@ class AsyncPolakoClient:
             request_body=request,
             response_model=OrderStatusResponse,
         )
+
+    async def create_subscription(
+        self,
+        *,
+        customer_email: str,
+        amount: Decimal,
+        currency: str,
+        billing_interval: BillingInterval,
+        merchant_subscription_ref: str,
+        success_url: str,
+        cancel_url: str,
+        error_url: str,
+        idempotency_key: Optional[str] = None,
+    ) -> SubscriptionCreated:
+        """
+        Create a subscription and get the form that sends the customer through the card registration (3DS).
+
+        The client must be created with ``company_id`` and ``api_key``. The subscription becomes active only
+        after the customer completes the registration; you learn about the result from the webhooks.
+
+        Pass your own ``idempotency_key`` (a UUID is recommended) and store it before the call: sending the same
+        request again with the same key returns the same subscription instead of creating a second one. Without
+        it a key is generated and returned in the result. A failed attempt (a network error or timeout, or HTTP 429,
+        500, 502, 503 or 504) is repeated with the same key, up to 3 attempts in all, so in the worst case a call takes
+        a minute and a half or more before it gives up: the 30 s timeout applies to each phase of an attempt
+        (connect, write, read) and there is no overall deadline, so set your own deadline above that. The endpoint
+        accepts 20 requests per 60 seconds, and every attempt counts against that limit.
+
+        Args:
+            customer_email: Email of the customer
+            amount: Amount charged every billing interval, greater than zero
+            currency: Currency code, e.g. ``"RSD"``
+            billing_interval: How often the customer is charged; a ``BillingInterval`` or its string value
+            merchant_subscription_ref: Your own reference of the plan or product (1 to 128 characters). A customer
+                can have only one live subscription per reference
+            success_url: Where the customer returns after a successful registration
+            cancel_url: Where the customer returns after cancelling
+            error_url: URL that receives a POST when the registration fails
+            idempotency_key: Optional key that makes the call safe to repeat
+
+        Returns:
+            SubscriptionCreated with the subscription ID, the registration form and the idempotency key used
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``amount`` is not greater than zero
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key belongs to another company (HTTP 403)
+            ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
+            RequestValidationError: If the server rejects a field, e.g. a currency that is not allowed (HTTP 422)
+            RateLimitedError: If the rate limit is hit and the wait is too long to retry (HTTP 429)
+            ServerError: If the gateway or the card processor fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        credentials = self._subscription_credentials()
+
+        try:
+            interval = BillingInterval(billing_interval)
+        except ValueError:
+            allowed = ", ".join(i.value for i in BillingInterval)
+            raise ValueError(f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}") from None
+
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise ValueError("'idempotency_key' must not be empty")
+
+        request = SubscribeRequest(
+            customer_email=customer_email,
+            amount=amount,
+            currency=currency,
+            billing_interval=interval,
+            merchant_subscription_ref=merchant_subscription_ref,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            error_url=error_url,
+        )
+        request.validate()
+        request.amount = Decimal(format(request.amount, "f"))  # plain digits, never an exponent
+
+        key = idempotency_key or str(uuid4())
+        response = await self._http_client.post(
+            f"/v1/company/{self._company_id}/subscriptions",
+            request_body=request,
+            response_model=SubscribeResponse,
+            headers={**credentials, "Idempotency-Key": key},
+        )
+        return SubscriptionCreated(
+            subscription_id=response.subscription_id,
+            registration_form=response.registration_form,
+            idempotency_key=key,
+        )
+
+    def _subscription_credentials(self) -> Dict[str, str]:
+        """The header that identifies the platform on subscription calls; the client must be configured for them."""
+        if self._company_id is None:
+            raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
+        if not self._api_key:
+            raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        return {"company_api_key": self._api_key}
+
+    async def get_subscription(self, subscription_id: Union[UUID, str]) -> SubscriptionDetails:
+        """
+        Read one subscription: its customer, card, charge history (newest first) and event journal (oldest first).
+
+        The client must be created with ``company_id`` and ``api_key``. Reading works even when subscriptions are
+        switched off for the company. The call is not retried: a failed attempt is raised as it is.
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Returns:
+            SubscriptionDetails
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
+            HttpClientError: If there is a network error
+        """
+        credentials = self._subscription_credentials()
+        subscription = check_subscription_id(subscription_id)
+
+        return await self._http_client.get(
+            f"/v1/company/{self._company_id}/subscriptions/{subscription}",
+            response_model=SubscriptionDetails,
+            headers=credentials,
+        )
+
+    async def list_subscriptions(
+        self,
+        *,
+        status: Optional[Union[SubscriptionStatus, str, Iterable[Union[SubscriptionStatus, str]]]] = None,
+        billing_interval: Optional[Union[BillingInterval, str, Iterable[Union[BillingInterval, str]]]] = None,
+        search: Optional[str] = None,
+        created_from: Optional[Union[date, datetime]] = None,
+        created_to: Optional[Union[date, datetime]] = None,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> SubscriptionPage:
+        """
+        List the subscriptions of the company, one page at a time.
+
+        The client must be created with ``company_id`` and ``api_key``. Reading works even when subscriptions are
+        switched off for the company. The call is not retried. To read all pages, call it again with a larger
+        ``offset`` until ``offset + len(items) >= total``.
+
+        Args:
+            status: Only subscriptions in this status; one value or several (any of them matches)
+            billing_interval: Only subscriptions charged at this interval; one value or several
+            search: Matched against the customer's email, your reference and the subscription ID
+            created_from: Only subscriptions created on or after this day or moment (a ``date``, or a ``datetime``
+                with a timezone; moments are sent to the second)
+            created_to: Only subscriptions created on or before this day or moment
+            sort_by: ``created_at`` (the default), ``next_charge_at``, ``last_charged_at``, ``amount`` or ``status``
+            sort_order: ``asc`` or ``desc``
+            limit: Subscriptions per page, 1 to 100
+            offset: How many matching subscriptions to skip
+
+        Returns:
+            SubscriptionPage with ``items``, ``total``, ``limit`` (the page size) and ``offset``
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``limit`` is not from 1 to 100
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key belongs to another company (HTTP 403)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
+            HttpClientError: If there is a network error
+        """
+        credentials = self._subscription_credentials()
+        query = SubscriptionListQuery.from_arguments(
+            status=status,
+            billing_interval=billing_interval,
+            search=search,
+            created_from=created_from,
+            created_to=created_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+        )
+
+        response = await self._http_client.get(
+            f"/v1/company/{self._company_id}/subscriptions",
+            response_model=SubscriptionListResponse,
+            headers=credentials,
+            params=query.to_params(),
+        )
+        return SubscriptionPage(items=response.items, total=response.total, limit=response.page_size, offset=query.offset)
+
+    async def _change_subscription(self, action: str, subscription_id: Union[UUID, str]) -> None:
+        credentials = self._subscription_credentials()
+        subscription = check_subscription_id(subscription_id)
+
+        await self._http_client.patch(
+            f"/v1/company/{self._company_id}/subscriptions/{subscription}/{action}",
+            headers=credentials,
+        )
+
+    async def pause_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Pause an active subscription: no charges are made until it is resumed.
+
+        The client must be created with ``company_id`` and ``api_key``. The next charge date is kept, so if it passes
+        while the subscription is paused, the charge is attempted soon after it is resumed. The call is not
+        retried: if the network fails you cannot tell whether the change was made, so read the subscription with
+        ``get_subscription`` before repeating it.
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is not active (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("pause", subscription_id)
+
+    async def resume_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Resume a paused subscription: scheduled charges go on.
+
+        The client must be created with ``company_id`` and ``api_key``. The next charge date is not moved; if it has
+        passed during the pause, the charge is attempted soon after the resume. The call is not retried (see
+        ``pause_subscription``).
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is not paused (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("resume", subscription_id)
+
+    async def cancel_subscription(self, subscription_id: Union[UUID, str]) -> None:
+        """
+        Cancel a subscription for good: no further charges, and it cannot be resumed.
+
+        The client must be created with ``company_id`` and ``api_key``. Cancelling does not refund anything already
+        charged; use ``refund_session`` with the ``payment_session_id`` of a charge in the history for that. The card
+        is released when no other live subscription uses it. The call is not retried (see ``pause_subscription``).
+
+        Args:
+            subscription_id: The ID of the subscription, as a ``UUID`` or a string holding one
+
+        Raises:
+            ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
+            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            UnauthorizedError: If the API key is unknown (HTTP 401)
+            ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
+            NotFoundError: If there is no such subscription (HTTP 404)
+            ConflictError: If subscriptions are off for the company or the subscription is already cancelled (HTTP 409)
+            RateLimitedError: If the rate limit is hit (HTTP 429)
+            ServerError: If the gateway fails (HTTP 5xx)
+            HttpClientError: If there is a network error
+        """
+        await self._change_subscription("cancel", subscription_id)
 
     @staticmethod
     def parse_payment_callback(payload: str, secret_key: Optional[str] = None) -> PaymentCallback:
