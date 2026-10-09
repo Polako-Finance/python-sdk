@@ -193,3 +193,63 @@ def test_updating_the_manifest_reports_a_broken_document_and_writes_nothing(chec
     assert check_docs.update() == 1
     assert "never closed" in capsys.readouterr().out
     assert not manifest.exists()
+
+
+@pytest.mark.parametrize("info", ["python", "Python", "PYTHON", "py", "py3", "python3", "python title=setup", "python {1,3}"])
+def test_the_language_of_a_fence_is_its_first_word_in_any_case(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+@pytest.mark.parametrize("info", ["pycon", "pythonic", "py2x", "bash", "text", ""])
+def test_a_fence_in_another_language_is_not_a_python_block(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+@pytest.mark.parametrize("indent", [" ", "  ", "   "])
+def test_a_heading_indented_by_up_to_three_spaces_is_a_heading(check_docs, monkeypatch, tmp_path, indent):
+    markdown = f"## A\n\n```python\nx = 1\n```\n\n{indent}## B\n\n```python\ny = 2\n```\n"
+
+    assert [name for name, _ in blocks_of(check_docs, monkeypatch, tmp_path, markdown)] == ["A::0", "B::0"]
+
+
+def test_a_heading_indented_four_spaces_is_code_and_not_a_heading(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n    ## B\n\n```python\nx = 1\n```\n"
+
+    assert [name for name, _ in blocks_of(check_docs, monkeypatch, tmp_path, markdown)] == ["A::0"]
+
+
+@pytest.mark.parametrize("quote", ["> ", "  > ", "> > "])
+def test_a_block_inside_a_quote_is_found_without_the_quote_marks(check_docs, monkeypatch, tmp_path, quote):
+    markdown = f"## A\n\n{quote}```python\n{quote}x = 1\n{quote}if x:\n{quote}    y = 2\n{quote}```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\nif x:\n    y = 2")]
+
+
+def test_a_quote_mark_without_a_space_after_it_is_read_too(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n>```python\n>x = 1\n>```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_a_block_in_a_quote_that_ends_before_the_block_does_is_an_error(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n> ```python\n> x = 1\n\n```python\ny = 2\n```\n"
+
+    with pytest.raises(ValueError, match="never closed"):
+        blocks_of(check_docs, monkeypatch, tmp_path, markdown)
+
+
+def test_the_tabs_of_a_block_stay_as_the_reader_copies_them(check_docs, monkeypatch, tmp_path):
+    """The hash must follow the text of the README, and a tab that Python rejects must stay a tab to be rejected."""
+    markdown = "## A\n\n```python\nif x:\n\ty = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "if x:\n\ty = 2")]
+
+
+def test_the_tabs_of_a_block_in_a_list_stay_when_the_indent_is_the_same_text(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n- Step\n\n    ```python\n    if x:\n    \ty = 2\n    ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "if x:\n\ty = 2")]

@@ -39,24 +39,34 @@ CLIENT_METHODS = {name for name, _ in inspect.getmembers(CLIENT, inspect.isfunct
 
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
-HEADING = re.compile(r"#{1,6} ")
+HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+QUOTE = re.compile(r"^(?: {0,3}>[ ]?)+")
 INDENT = re.compile(r"[ \t]*")
+PYTHON_LANGUAGES = frozenset({"python", "py", "python3", "py3"})  # ``pycon`` is a console session, not code to run
 
 
 def _columns(whitespace: str) -> int:
     return len(whitespace.expandtabs(4))
 
 
-def _dedent(line: str, columns: int) -> str:
-    """Take ``columns`` columns of indentation off a line (tabs count to the next multiple of four), or all it has."""
+def _dedent(line: str, indent: str) -> str:
+    """
+    Take the indent of the opening fence off a line, leaving the rest of the text as it is written.
+
+    When the line starts with the very same characters they are cut off; a line indented in another way (tabs where the fence
+    has spaces) loses the same number of columns (a tab counts to the next multiple of four), or all it has.
+    """
+    if line.startswith(indent):
+        return line[len(indent) :]
     leading = INDENT.match(line)[0]
-    return leading.expandtabs(4)[columns:] + line[len(leading) :]
+    return leading.expandtabs(4)[_columns(indent) :] + line[len(leading) :]
 
 
 def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     """
     Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it.
 
+    The language of a fence is the first word of its info string, in any case: ``python``, ``py``, ``python3``, ``py3``.
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
     fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
@@ -65,38 +75,38 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
 
     As in CommonMark, a fence indented by four columns or more is a fence only inside a list item (then its code is dedented
     by the indent of the opening fence); anywhere else it is an indented code block and is not looked at. A list lasts
-    until a heading or a paragraph that is not indented and comes after a blank line.
+    until a heading or a paragraph that is not indented and comes after a blank line. A heading may be indented by up to
+    three spaces. A fence inside a quote (``> ```python``) is read without the quote marks; a quote that ends before the
+    fence does leaves the block never closed.
 
     Raises:
         ValueError: If a fenced block is never closed
     """
     blocks: List[Tuple[str, str]] = []
     heading, counter = "", {}
-    fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent) inside a fenced block
+    fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent, quoted) inside a fenced block
     in_list, after_blank = False, False
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        quote = QUOTE.match(raw)
+        line = raw[quote.end() :] if quote else raw
         if fence is None:
             opening = FENCE.match(line)
             inline = opening and opening["marker"][0] == "`" and "`" in opening["info"]
             if opening and not inline and (_columns(opening["indent"]) < 4 or in_list):
-                marker, language = opening["marker"], opening["info"].strip()
-                fence, current, opened_at = (
-                    (marker[0], len(marker), language.startswith("python"), opening["indent"]),
-                    [],
-                    number,
-                )
+                marker, words = opening["marker"], opening["info"].split()
+                is_python = bool(words) and words[0].lower() in PYTHON_LANGUAGES
+                fence, current, opened_at = (marker[0], len(marker), is_python, opening["indent"], bool(quote)), [], number
             elif HEADING.match(line):
                 heading, in_list = line.lstrip("# ").strip(), False
             elif LIST_ITEM.match(line):
                 in_list = True
             elif line.strip() and not line[0].isspace() and after_blank:
                 in_list = False
-            if line.strip() or fence is not None:
-                after_blank = False
-            else:
-                after_blank = True
+            after_blank = not line.strip() and fence is None
             continue
-        character, length, is_python, indent = fence
+        character, length, is_python, indent, quoted = fence
+        if quoted and not quote:
+            break  # the quote ended, and the fence with it: it was never closed
         closing = re.match(rf"^([ \t]*){re.escape(character)}{{{length},}}\s*$", line)
         if closing and _columns(closing[1]) <= _columns(indent) + 3:
             if is_python:
@@ -105,7 +115,7 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
                 blocks.append((f"{path.relative_to(ROOT).as_posix()}::{heading}::{n}", "\n".join(current)))
             fence = None
         elif is_python:
-            current.append(_dedent(line, _columns(indent)))
+            current.append(_dedent(line, indent))
     if fence is not None:
         raise ValueError(f"{path.name}: the block opened at line {opened_at} is never closed")
     return blocks

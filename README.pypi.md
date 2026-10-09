@@ -188,8 +188,8 @@ async def subscribe():
   error URL; every later charge is reported to your webhook URL.
 - Repeating a request with the same `idempotency_key` returns the same subscription. A request that fails on the
   network (a timeout included), or with HTTP 429, 500, 502, 503 or 504, is repeated for you, up to three attempts, with the
-  same key. There is no overall deadline: the 30 second timeout applies to each phase of an attempt, so a call
-  that keeps failing can take two minutes or more before it raises; if you set a deadline of your own, set it above that.
+  same key. There is no overall deadline: the 30 second timeout applies to each phase of an attempt, so in the
+  worst case a failing call takes two minutes or more before it raises; if you set a deadline of your own, set it above that.
 - The endpoint accepts 20 requests per 60 seconds, and every attempt counts. Beyond that you get a `RateLimitedError` with
   `retry_after` set.
 - `amount` has at most two decimal places (`990.00`): the gateway keeps cents, so a third decimal is refused with a `ValueError`
