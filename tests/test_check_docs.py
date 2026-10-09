@@ -280,3 +280,47 @@ def test_the_language_may_be_followed_by_attributes_without_a_space(check_docs, 
     markdown = f"## A\n\n```{info}\nx = 1\n```\n"
 
     assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+NOT_PYTHON = [
+    "python-console",
+    "python_traceback",
+    "py-foo",
+    "python=3",
+    "python3.8",
+    "pythonic",
+    "py2x",
+    "pycon",
+    "{.python-console}",
+    "{.pythonic}",
+    "{#python}",
+    "{python}",
+    "{.py_foo .bash}",
+]
+
+
+@pytest.mark.parametrize("info", NOT_PYTHON)
+def test_a_word_that_only_starts_like_python_is_not_python(check_docs, monkeypatch, tmp_path, info):
+    """The word of the language ends at a space, a comma, a brace or a colon, and not at the first odd character."""
+    markdown = f"## A\n\n```{info}\n>>> x = 1\n```\n\n```Python\ny = 2\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "y = 2")]
+
+
+@pytest.mark.parametrize("info", ["{#x .python}", "{.numberLines .python}", "{#x .a .python .b}", "{ .Python }", "{.py}"])
+def test_python_may_be_any_class_of_a_pandoc_attribute_list(check_docs, monkeypatch, tmp_path, info):
+    markdown = f"## A\n\n```{info}\nx = 1\n```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1")]
+
+
+def test_a_console_session_in_a_quoted_block_keeps_its_prompt(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n> ```python\n> >>> x = 1\n> ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", ">>> x = 1")]
+
+
+def test_only_the_marks_of_the_quote_that_holds_the_fence_are_taken_off(check_docs, monkeypatch, tmp_path):
+    markdown = "## A\n\n> ```python\n> x = 1\n> > y = 2\n> ```\n\n> > ```python\n> > >>> z = 3\n> > ```\n"
+
+    assert blocks_of(check_docs, monkeypatch, tmp_path, markdown) == [("A::0", "x = 1\n> y = 2"), ("A::1", ">>> z = 3")]

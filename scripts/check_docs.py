@@ -23,7 +23,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import polako.sdk as sdk
 
@@ -41,9 +41,30 @@ FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
 HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
 QUOTE = re.compile(r"^(?: {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ ]+)?(?: {0,3}>[ ]?)+")
-LANGUAGE = re.compile(r"[A-Za-z0-9]+")
+QUOTE_MARK = re.compile(r" {0,3}>[ ]?")
+LANGUAGE = re.compile(r"[A-Za-z0-9]+(?=$|[\s,{:}])")  # the word ends at a space, a comma, a brace or a colon
+ATTRIBUTE_CLASS = re.compile(r"(?<![^\s{])\.([^\s}]+)")  # ``.python`` in a Pandoc list such as ``{#id .python}``
 INDENT = re.compile(r"[ \t]*")
 PYTHON_LANGUAGES = frozenset({"python", "py", "python3", "py3"})  # ``pycon`` is a console session, not code to run
+
+
+def _is_python(info: str) -> bool:
+    """Whether the info string of a fence names python: a leading word (``python,ignore``) or a class (``{#x .python}``)."""
+    info = info.strip()
+    if info.startswith("{"):
+        return any(name.lower() in PYTHON_LANGUAGES for name in ATTRIBUTE_CLASS.findall(info))
+    word = LANGUAGE.match(info)
+    return bool(word) and word[0].lower() in PYTHON_LANGUAGES
+
+
+def _unquote(line: str, depth: int) -> Optional[str]:
+    """Take off the marks of the ``depth`` quotes that hold a fence, and no more; None when the line is outside them."""
+    for _ in range(depth):
+        mark = QUOTE_MARK.match(line)
+        if mark is None:
+            return None
+        line = line[mark.end() :]
+    return line
 
 
 def _columns(whitespace: str) -> int:
@@ -68,7 +89,9 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     Return (key, code) for every python fenced block; key = file::nearest heading::ordinal under it.
 
     The language of a fence is the word that opens its info string, in any case: ``python``, ``py``, ``python3``, ``py3``.
-    Attributes may follow it, with or without a space (``python,ignore``, ``python{1,2}``, ``{.python}``).
+    The word ends at a space, a comma, a brace or a colon (``python,ignore``, ``python{1,2}``, ``python:file.py``), so
+    ``python-console`` or ``python3.8`` are other languages. A Pandoc list of attributes names the language as any of its
+    classes (``{#x .numberLines .python}``).
     Every kind of fenced block is followed to its end, so a ``# comment`` line inside a bash or text block is not taken for
     a heading. A fence is closed by a fence of the same character that is at least as long as the one that opened it. A
     fence that is never closed would swallow the rest of the file, so it is an error. A line of backticks followed by text
@@ -79,27 +102,27 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
     by the indent of the opening fence); anywhere else it is an indented code block and is not looked at. A list lasts
     until a heading or a paragraph that is not indented and comes after a blank line. A heading may be indented by up to
     three spaces. A fence inside a quote (``> ```python``), also one in a list item (``- > ```python``), is read without
-    the quote marks, and only that one: in any other block ``>>>`` is code. A quote that ends before the fence does leaves
-    the block never closed (CommonMark would close it there; stopping is the safe way for a check).
+    the marks of the quotes that hold it, and no more (``> >>> x`` keeps its prompt); in any other block ``>>>`` is code.
+    A quote that ends before the fence does leaves the block never closed (CommonMark would close it there; stopping is
+    the safe way for a check).
 
     Raises:
         ValueError: If a fenced block is never closed
     """
     blocks: List[Tuple[str, str]] = []
     heading, counter = "", {}
-    fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent, quoted) inside a fenced block
+    fence, current, opened_at = None, [], 0  # fence: (character, length, is_python, indent, quote depth) inside a fenced block
     in_list, after_blank = False, False
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        # Quote marks are the container of a fence that opened inside a quote; inside any other block they are code.
-        quote = QUOTE.match(raw) if fence is None or fence[4] else None
-        line = raw[quote.end() :] if quote else raw
         if fence is None:
+            quote = QUOTE.match(raw)
+            line = raw[quote.end() :] if quote else raw
             opening = FENCE.match(line)
             inline = opening and opening["marker"][0] == "`" and "`" in opening["info"]
             if opening and not inline and (_columns(opening["indent"]) < 4 or in_list):
-                marker, word = opening["marker"], LANGUAGE.match(opening["info"].strip().lstrip("{. "))
-                is_python = bool(word) and word[0].lower() in PYTHON_LANGUAGES
-                fence, current, opened_at = (marker[0], len(marker), is_python, opening["indent"], bool(quote)), [], number
+                marker, depth = opening["marker"], raw[: quote.end()].count(">") if quote else 0
+                is_python = _is_python(opening["info"])
+                fence, current, opened_at = (marker[0], len(marker), is_python, opening["indent"], depth), [], number
             elif HEADING.match(line):
                 heading, in_list = line.lstrip("# ").strip(), False
             elif LIST_ITEM.match(line):
@@ -108,8 +131,10 @@ def extract_blocks(path: Path) -> List[Tuple[str, str]]:
                 in_list = False
             after_blank = not line.strip() and fence is None
             continue
-        character, length, is_python, indent, quoted = fence
-        if quoted and not quote:
+        character, length, is_python, indent, depth = fence
+        # The marks of the quotes that hold the fence are not its code; in any other block they are, and stay as written.
+        line = _unquote(raw, depth)
+        if line is None:
             break  # the quote ended, and the fence with it: it was never closed
         closing = re.match(rf"^([ \t]*){re.escape(character)}{{{length},}}\s*$", line)
         if closing and _columns(closing[1]) <= _columns(indent) + 3:
