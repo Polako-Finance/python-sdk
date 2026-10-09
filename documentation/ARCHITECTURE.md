@@ -65,8 +65,12 @@ distribution excludes `tests/`. The tests stay in the repository for anyone who 
     planned outages, dropped connections and card-processor refusals; and the other direction: lifecycle webhooks and the
     registration-failure notification, signed and retried the way the gateway does it (compact JSON with sorted keys,
     HMAC-SHA256 under the platform API key, three attempts for 5xx and network errors, 4xx final; one attempt for the
-    registration failure, which is unsigned for a subscription made without a platform). Every request and delivery is
-    recorded. It is a model written from the contract, so it cannot show where the real gateway differs.
+    registration failure, which is unsigned for a subscription made without a platform). It also serves the read and
+    management routes (list with filters, sorting and paging; the detail with the card, charge history and journal; pause,
+    resume, cancel), with the server's order of checks (the API key, then whose subscription it is, then the switch, then
+    the status the change is allowed from) and the cancellation webhook; a subscription keeps its history and journal as
+    the test activates, charges and cancels it. Every request and delivery is recorded. It is a model written from the
+    contract, so it cannot show where the real gateway differs.
   - `merchant_receiver.py`, a merchant's endpoint written the way the documentation tells a merchant to write it: it
     reads the raw body and passes it to the SDK. It can also play a merchant who serializes the JSON again, one whose
     endpoint is failing, and one who accepts unsigned notifications.

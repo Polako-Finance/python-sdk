@@ -20,7 +20,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -30,11 +30,16 @@ import aiohttp
 from aiohttp import web
 
 from tests.factories import make_form_post_response, make_hpp_form_response, make_redirect_form_response
-from tests.generators import generate_api_key
+from tests.generators import generate_api_key, generate_random_digit_string, generate_readable_string
 
 KNOWN_CURRENCIES = ("RSD", "RUB", "EUR", "USD")
 BILLING_INTERVALS = ("daily", "weekly", "monthly", "quarterly", "yearly")
 LIVE_STATUSES = ("active", "paused")
+SUBSCRIPTION_STATUSES = ("pending_registration", "registration_failed", "active", "past_due", "paused", "cancelled")
+SORT_FIELDS = ("created_at", "next_charge_at", "last_charged_at", "amount", "status")
+INTERVAL_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 91, "yearly": 365}
+# the statuses each change is allowed from, as the subscription state machine has them
+CHANGE_FROM = {"pause": ("active",), "resume": ("paused",), "cancel": ("active", "paused", "past_due")}
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 REF_MAX_LENGTH = 128
 
@@ -95,6 +100,15 @@ class Subscription:
     error_url: str
     form: Dict[str, Any]
     status: str = "pending_registration"
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    customer_id: UUID = field(default_factory=uuid4)
+    external_customer_id: str = field(default_factory=lambda: generate_readable_string(12))
+    card: Optional[Dict[str, Any]] = None
+    anchor_at: Optional[datetime] = None
+    next_charge_at: Optional[datetime] = None
+    last_charged_at: Optional[datetime] = None
+    charges: List[Dict[str, Any]] = field(default_factory=list)
+    journal: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -156,7 +170,7 @@ class GatewayTestServer:
         """The customer completed the card registration. The merchant gets no webhook for this."""
         subscription = self.subscriptions[subscription_id]
         assert subscription.status == "pending_registration", f"cannot activate a {subscription.status} subscription"
-        subscription.status = "active"
+        self._activate(subscription)
         return subscription
 
     async def charge(
@@ -182,6 +196,7 @@ class GatewayTestServer:
         else:
             subscription.status = "past_due"
             payload = {"event": "charge_failed", **base, "error_class": error_class or "card_declined"}
+        self._book_charge(subscription, succeeded, amount, error_class or "card_declined")
         return await self.send_webhook(subscription, payload)
 
     async def complete_registration(
@@ -197,9 +212,10 @@ class GatewayTestServer:
         subscription = self.subscriptions[subscription_id]
         assert subscription.status == "pending_registration", f"cannot finish a {subscription.status} registration"
         if succeeded:
-            subscription.status = "active"
+            self._activate(subscription)
             return None
         subscription.status = "registration_failed"
+        self._note(subscription, "registration_failed")
         payload = {
             "order_id": str(subscription.id),
             "subscription_id": str(subscription.id),
@@ -217,6 +233,7 @@ class GatewayTestServer:
         subscription = self.subscriptions[subscription_id]
         assert subscription.status in ("active", "past_due"), f"cannot drop a {subscription.status} subscription"
         subscription.status = "dropped_externally"
+        self._note(subscription, "dropped_externally")
         return await self.send_webhook(subscription, {"event": "dropped_externally", **self._lifecycle_payload(subscription)})
 
     async def cancel(self, subscription_id: UUID) -> Optional[Delivery]:
@@ -224,7 +241,59 @@ class GatewayTestServer:
         subscription = self.subscriptions[subscription_id]
         assert subscription.status in ("active", "paused", "past_due"), f"cannot cancel a {subscription.status} one"
         subscription.status = "cancelled"
+        subscription.next_charge_at = None
+        self._note(subscription, "cancelled")
         return await self.send_webhook(subscription, {"event": "cancelled", **self._lifecycle_payload(subscription)})
+
+    def _note(self, subscription: Subscription, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        """An entry in the subscription's journal."""
+        subscription.journal.append(
+            {"id": str(uuid4()), "eventType": event_type, "payload": payload, "createdAt": _moment(datetime.now(timezone.utc))}
+        )
+
+    def _activate(self, subscription: Subscription) -> None:
+        """The card registration succeeded: the subscription is live, has a card and a next charge."""
+        now = datetime.now(timezone.utc)
+        subscription.status = "active"
+        subscription.anchor_at = now
+        subscription.next_charge_at = now + timedelta(days=INTERVAL_DAYS[subscription.billing_interval])
+        subscription.card = {
+            "id": str(uuid4()),
+            "maskedPan": f"{generate_random_digit_string(6)}******{generate_random_digit_string(4)}",
+            "cardBrand": "VISA",
+            "panExpiry": "12/35",
+            "status": "active",
+        }
+        self._note(subscription, "created")
+
+    def _book_charge(self, subscription: Subscription, succeeded: bool, amount: Optional[Decimal], error_class: str) -> None:
+        """One scheduled charge, in the history and in the journal."""
+        now = datetime.now(timezone.utc)
+        subscription.charges.append(
+            {
+                "id": str(uuid4()),
+                "chargeDate": now.date().isoformat(),
+                "orderId": generate_readable_string(12),
+                "status": "succeeded" if succeeded else "failed",
+                "resultCode": "000" if succeeded else "051",
+                "errorClass": None if succeeded else error_class,
+                "errorMessage": None if succeeded else "The card was declined.",
+                "amount": str(amount if amount is not None else subscription.amount),
+                "retryCount": 0,
+                "reconcileCount": 0,
+                "nextRetryAt": None,
+                "createdAt": _moment(now),
+                "updatedAt": _moment(now),
+                "paymentSessionId": str(uuid4()),
+            }
+        )
+        if succeeded:
+            subscription.last_charged_at = now
+            subscription.next_charge_at = now + timedelta(days=INTERVAL_DAYS[subscription.billing_interval])
+            self._note(subscription, "charge_succeeded")
+        else:
+            self._note(subscription, "charge_failed")
+            self._note(subscription, "past_due")
 
     @staticmethod
     def _lifecycle_payload(subscription: Subscription) -> Dict[str, Any]:
@@ -296,6 +365,11 @@ class GatewayTestServer:
     async def run(self):
         app = web.Application(middlewares=[self._record])
         app.router.add_post("/v1/company/{company_id}/subscriptions", self._subscribe)
+        app.router.add_get("/v1/company/{company_id}/subscriptions", self._list)
+        app.router.add_get("/v1/company/{company_id}/subscriptions/{subscription_id}", self._detail)
+        for action in CHANGE_FROM:
+            path = f"/v1/company/{{company_id}}/subscriptions/{{subscription_id}}/{action}"
+            app.router.add_patch(path, self._change(action))
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, self.host, 0)
@@ -317,14 +391,9 @@ class GatewayTestServer:
 
     async def _subscribe(self, request: web.Request) -> web.Response:
         # 0. Things that go wrong in front of the service: a planned outage, a dropped connection, the rate limit.
-        if self._planned:
-            planned = self._planned.pop(0)
-            if planned.drop_connection:
-                if request.transport is not None:
-                    request.transport.abort()
-                raise ConnectionResetError("the emulator dropped the connection")
-            headers = {"Retry-After": str(planned.retry_after)} if planned.retry_after is not None else None
-            return web.json_response({"detail": "planned failure"}, status=planned.status, headers=headers)
+        planned_response = self._planned_response(request)
+        if planned_response is not None:
+            return planned_response
         wait = self._seconds_until_allowed(request.headers.get("company_api_key", ""))
         if wait is not None:
             return web.json_response({"detail": "Too many requests"}, status=429, headers={"Retry-After": str(wait)})
@@ -376,6 +445,105 @@ class GatewayTestServer:
         reply = {"subscriptionId": str(subscription.id), "registrationForm": subscription.form}
         self._replies[(company_id, idempotency_key)] = reply
         return web.json_response(reply, status=201)
+
+    def _planned_response(self, request: web.Request) -> Optional[web.Response]:
+        """The next planned failure, if any: an outage answer, or a connection dropped without one."""
+        if not self._planned:
+            return None
+        planned = self._planned.pop(0)
+        if planned.drop_connection:
+            if request.transport is not None:
+                request.transport.abort()
+            raise ConnectionResetError("the emulator dropped the connection")
+        headers = {"Retry-After": str(planned.retry_after)} if planned.retry_after is not None else None
+        return web.json_response({"detail": "planned failure"}, status=planned.status, headers=headers)
+
+    # ------------------------------------------------------------------ read and manage
+
+    def _caller(self, request: web.Request) -> Tuple[Optional[web.Response], Optional[UUID]]:
+        """Who is calling a company's route: the platform behind the API key, and only for its own company."""
+        try:
+            company_id = UUID(request.match_info["company_id"])
+        except ValueError:
+            return _error(422, "company_id is not a valid UUID"), None
+        api_key = request.headers.get("company_api_key", "").strip()
+        if not api_key:
+            return _error(401, "Authentication required."), None
+        platform = self.platforms.get(api_key)
+        if platform is None:
+            return _error(401, "Client platform not found for the provided API key."), None
+        if platform.company_id != company_id:
+            return _error(403, "API key does not belong to this company."), None
+        return None, company_id
+
+    def _owned(self, request: web.Request, company_id: UUID) -> Tuple[Optional[web.Response], Optional[Subscription]]:
+        """The subscription in the path, if there is one and it is the company's."""
+        try:
+            subscription_id = UUID(request.match_info["subscription_id"])
+        except ValueError:
+            return _error(422, "subscription_id is not a valid UUID"), None
+        subscription = self.subscriptions.get(subscription_id)
+        if subscription is None:
+            return _error(404, "Subscription not found"), None
+        if subscription.company_id != company_id:
+            return _error(403, "Subscription does not belong to this company"), None
+        return None, subscription
+
+    async def _detail(self, request: web.Request) -> web.Response:
+        planned = self._planned_response(request)
+        if planned is not None:
+            return planned
+        refusal, company_id = self._caller(request)
+        if refusal is not None:
+            return refusal
+        refusal, subscription = self._owned(request, company_id)
+        if refusal is not None:
+            return refusal
+        return web.json_response(_detail_json(subscription))
+
+    async def _list(self, request: web.Request) -> web.Response:
+        planned = self._planned_response(request)
+        if planned is not None:
+            return planned
+        refusal, company_id = self._caller(request)
+        if refusal is not None:
+            return refusal
+        search, problem = _read_list_query(request.query)
+        if problem is not None:
+            return problem
+
+        mine = [s for s in self.subscriptions.values() if s.company_id == company_id]
+        matching = [s for s in mine if search.accepts(s)]
+        ordered = search.order(matching, list(self.subscriptions).index)
+        page = ordered[search.offset : search.offset + search.limit]
+        return web.json_response({"items": [_summary_json(s) for s in page], "total": len(ordered), "page_size": search.limit})
+
+    def _change(self, action: str):
+        async def handler(request: web.Request) -> web.Response:
+            planned = self._planned_response(request)
+            if planned is not None:
+                return planned
+            refusal, company_id = self._caller(request)
+            if refusal is not None:
+                return refusal
+            refusal, subscription = self._owned(request, company_id)
+            if refusal is not None:
+                return refusal
+            if not self.subscriptions_enabled:
+                return _error(409, "Subscriptions are not enabled for this company.")
+            if subscription.status not in CHANGE_FROM[action]:
+                return _error(409, f"Subscription is {subscription.status}; it cannot be changed with {action}.")
+            if action == "pause":
+                subscription.status = "paused"
+                self._note(subscription, "paused")
+            elif action == "resume":
+                subscription.status = "active"
+                self._note(subscription, "resumed")
+            else:
+                await self.cancel(subscription.id)
+            return web.Response(status=204)
+
+        return handler
 
     def _seconds_until_allowed(self, api_key: str) -> Optional[int]:
         """Count this request against the rate limit; the seconds to wait if it is over the limit, else None."""
@@ -454,3 +622,127 @@ def _read_request(raw: bytes) -> Tuple[Dict[str, Any], List[str]]:
         if not _http_url(fields[snake]):
             problems.append(f"{wire} must be a valid http or https URL")
     return fields, problems
+
+
+def _moment(moment: datetime) -> str:
+    """A time as the server writes it: ISO 8601, UTC, a trailing `Z`."""
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _summary_json(s: Subscription) -> Dict[str, Any]:
+    return {
+        "id": str(s.id),
+        "customerId": str(s.customer_id),
+        "customerEmail": s.customer_email,
+        "merchantSubscriptionRef": s.merchant_subscription_ref,
+        "amount": str(s.amount),
+        "currency": s.currency,
+        "billingInterval": s.billing_interval,
+        "status": s.status,
+        "nextChargeAt": _moment(s.next_charge_at) if s.next_charge_at else None,
+        "lastChargedAt": _moment(s.last_charged_at) if s.last_charged_at else None,
+        "createdAt": _moment(s.created_at),
+    }
+
+
+def _detail_json(s: Subscription) -> Dict[str, Any]:
+    failed = [charge for charge in s.charges if charge["status"] == "failed"]
+    return {
+        "id": str(s.id),
+        "customer": {"id": str(s.customer_id), "externalCustomerId": s.external_customer_id, "email": s.customer_email},
+        "savedCard": s.card,
+        "merchantSubscriptionRef": s.merchant_subscription_ref,
+        "amount": str(s.amount),
+        "currency": s.currency,
+        "billingInterval": s.billing_interval,
+        "status": s.status,
+        "anchorAt": _moment(s.anchor_at) if s.anchor_at else None,
+        "nextChargeAt": _moment(s.next_charge_at) if s.next_charge_at else None,
+        "lastChargedAt": _moment(s.last_charged_at) if s.last_charged_at else None,
+        "createdAt": _moment(s.created_at),
+        "failedChargeCount": len(failed),
+        "lastFailedChargeAt": failed[-1]["createdAt"] if failed else None,
+        "chargeHistory": list(reversed(s.charges)),  # newest first
+        "events": list(s.journal),  # oldest first
+    }
+
+
+@dataclass
+class ListQuery:
+    """What a list request asks for, once it has been read and found valid."""
+
+    statuses: List[str]
+    intervals: List[str]
+    text: Optional[str]
+    date_from: Optional[datetime]
+    date_to: Optional[datetime]
+    sort_by: str
+    descending: bool
+    limit: int
+    offset: int
+
+    def accepts(self, s: Subscription) -> bool:
+        if self.statuses and s.status not in self.statuses:
+            return False
+        if self.intervals and s.billing_interval not in self.intervals:
+            return False
+        if self.date_from and s.created_at < self.date_from:
+            return False
+        if self.date_to and s.created_at > self.date_to:
+            return False
+        if self.text:
+            needle = self.text.casefold()
+            haystack = (s.customer_email, s.merchant_subscription_ref, str(s.id))
+            return any(needle in value.casefold() for value in haystack)
+        return True
+
+    def order(self, subscriptions: List[Subscription], position: Callable[[UUID], int]) -> List[Subscription]:
+        """Sorted by the chosen field; unset times go last when ascending (as the database does), ties by creation."""
+
+        def key(s: Subscription):
+            value = getattr(s, self.sort_by)
+            return (value is None, value if value is not None else 0, position(s.id))
+
+        return sorted(subscriptions, key=key, reverse=self.descending)
+
+
+def _read_list_query(query) -> Tuple[Optional[ListQuery], Optional[web.Response]]:
+    """Read the query string of a list request; the answer to give instead if it is not valid."""
+    try:
+        limit, offset = int(query.get("limit", "10")), int(query.get("offset", "0"))
+    except ValueError:
+        return None, _error(422, "limit and offset must be integers")
+    if not 1 <= limit <= 100 or offset < 0:
+        return None, _error(422, "limit must be 1 to 100 and offset must not be negative")
+    statuses, intervals = query.getall("status", []), query.getall("billing_interval", [])
+    if any(value not in SUBSCRIPTION_STATUSES for value in statuses):
+        return None, _error(422, f"status must be one of {', '.join(SUBSCRIPTION_STATUSES)}")
+    if any(value not in BILLING_INTERVALS for value in intervals):
+        return None, _error(422, f"billing_interval must be one of {', '.join(BILLING_INTERVALS)}")
+    sort_by, sort_order = query.get("sort_by") or "created_at", query.get("sort_order") or "desc"
+    if sort_by not in SORT_FIELDS:
+        return None, _error(400, f"Invalid sort_by '{sort_by}'. Allowed values: {sorted(SORT_FIELDS)}.")
+    if sort_order not in ("asc", "desc"):
+        return None, _error(400, f"Invalid sort_order '{sort_order}'. Allowed values: ['asc', 'desc'].")
+    try:
+        date_from = _read_bound(query.get("date_from"), end_of_day=False)
+        date_to = _read_bound(query.get("date_to"), end_of_day=True)
+    except ValueError as error:
+        return None, _error(400, str(error))
+    return (
+        ListQuery(statuses, intervals, query.get("filter"), date_from, date_to, sort_by, sort_order == "desc", limit, offset),
+        None,
+    )
+
+
+def _read_bound(value: Optional[str], *, end_of_day: bool) -> Optional[datetime]:
+    """A day or a moment (ISO 8601) as an instant; a bare day means its start, or its end for an upper bound."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("Invalid ISO 8601 format. Expected: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[Z|+HH:MM].") from None
+    if "T" not in value and end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
