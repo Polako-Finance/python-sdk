@@ -14,8 +14,8 @@ This module is part of the **Polako Finance** platform.
 ## Common Commands
 
 ```bash
-make install          # poetry install
-make test             # pytest
+make install          # poetry install (SDK) + poetry -C tests install (tests)
+make test             # poetry -C tests run pytest (tests are a separate Poetry project in tests/)
 make lint             # black, isort, flake8, mypy
 make build            # poetry build
 ```
@@ -27,6 +27,7 @@ make build            # poetry build
 - **Formatting**: Black + isort (profile=black)
 - **Type checking**: mypy (Python 3.11 target)
 - **Async-first**: httpx with context manager pattern
+- **Tests**: data comes from `tests/generators.py` and `tests/factories.py` (`make_*(**overrides)` returns fresh randomized data, a test overrides only what it checks), no literals; dates from `now()`.
 
 ## Key Context
 

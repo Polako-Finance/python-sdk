@@ -50,13 +50,57 @@ python callback_example.py
 - Processing successful payments
 - Handling failed payments
 
+### 3. Subscriptions (`subscription_example.py`)
+
+A small merchant server (FastAPI) for the whole subscription flow: it creates a subscription, sends the customer to the
+card registration, and reads the notifications the gateway sends afterwards (every charge, a revoked card, a cancellation
+and a failed card registration).
+
+**Run:**
+```bash
+pip install polako-finance fastapi uvicorn
+uvicorn subscription_example:app --port 8000
+curl -X POST "http://localhost:8000/subscribe?email=jane.smith@example.com"
+```
+
+The gateway has to reach the two notification URLs, so set `SHOP_URL` in the file to an address it can open (for example a
+tunnel to your machine while you try this out), and put your company ID (shown on the Company info page of the dashboard) and the API key of your platform
+into `COMPANY_ID` and `API_KEY`.
+
+**Key features:**
+- Creating a subscription with an idempotency key you keep with your order
+- Returning the page that sends the customer to the card registration
+- Reading subscription webhooks and the failed-registration notification from the raw request body
+- Turning the errors of the SDK into HTTP answers
+
+### 4. Managing subscriptions (`subscription_management_example.py`)
+
+A small back office (FastAPI) for the subscriptions you have created: it lists them page by page (with a status filter and
+a text search), shows one with its card, charges and journal, and pauses, resumes or cancels it. It turns the errors of
+the SDK into HTTP answers, including the case where the network fails in the middle of a change.
+
+**Run:**
+```bash
+pip install polako-finance fastapi uvicorn
+uvicorn subscription_management_example:app --port 8001
+curl "http://localhost:8001/subscriptions?status=active&limit=20"
+```
+
+Put your company ID and the API key of your platform into `COMPANY_ID` and `API_KEY`, as for the subscription example.
+This server can cancel your customers' subscriptions, so keep it behind your own sign-in.
+
+**Key features:**
+- Listing with a filter, a search and paging
+- Reading one subscription, with the `payment_session_id` of every charge (what `refund_session` needs)
+- Pausing, resuming and cancelling, and what each refusal means
+- Not repeating a change after a network failure: read the subscription first
 ## Configuration
 
 Before running the examples, update the following values:
 
 ```python
 # Replace these with your actual credentials
-PLATFORM_ID = UUID("your-platform-id-here")
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
 SECRET_KEY = "your-secret-key-here"
 ```
 
@@ -76,108 +120,147 @@ async with PolakoClient(test_env=False) as client:
 
 ## Integration with Web Frameworks
 
+Both examples verify the webhook signature. The webhook body is passed to the SDK exactly as received.
+
 ### FastAPI Example
 
 ```python
-from fastapi import FastAPI, Request
-from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi import FastAPI, HTTPException, Request
+from polako.sdk import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PolakoClient
+
 app = FastAPI()
 
-@app.post('/create-payment')
-async def create_payment(data: dict):
-    async with PolakoClient(test_env=True) as client:
-        order = OrderDetails(
-            currency="RSD",
-            language="en",
-            order_id=data['order_id'],
-            items=[OrderItem(**item) for item in data['items']],
-            total=Decimal(data['total'])
-        )
-        
-        customer = CustomerInfo(**data['customer'])
-        
-        session = await client.create_order(
-            order=order,
-            customer=customer,
-            platform_id=UUID(app.config['PLATFORM_ID']),
-            secret_key=app.config['SECRET_KEY']
-        )
-        
-        return {
-            'payment_url': session.paymentPageUrl,
-            'session_id': session.paymentSessionId
-        }
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
+SECRET_KEY = "your-secret-key"  # your secret key
 
-@app.post('/webhook')
+
+@app.post("/create-payment")
+async def create_payment(data: dict):
+    order = OrderDetails(
+        currency="RSD",
+        language="en",
+        order_id=data["order_id"],
+        items=[
+            OrderItem(
+                code=item["code"],
+                name=item["name"],
+                description=item["description"],
+                price=Decimal(item["price"]),
+                quantity=item["quantity"],
+                tax=item["tax"],
+            )
+            for item in data["items"]
+        ],
+        total=Decimal(data["total"]),
+    )
+    customer_data = data["customer"]
+    customer = CustomerInfo(
+        first_name=customer_data["first_name"],
+        last_name=customer_data["last_name"],
+        email=customer_data["email"],
+        phone=customer_data["phone"],
+        address=CustomerAddress(
+            address=customer_data["address"]["street"],
+            city=customer_data["address"]["city"],
+            state=customer_data["address"]["state"],
+            zip=customer_data["address"]["zip"],
+            country=customer_data["address"]["country"],
+        ),
+    )
+
+    async with PolakoClient(test_env=True) as client:
+        session = await client.create_order(order, customer, PLATFORM_ID, SECRET_KEY)
+
+    return {"payment_url": session.paymentPageUrl, "session_id": session.paymentSessionId}
+
+
+@app.post("/webhook")
 async def webhook(request: Request):
     body = await request.body()
-    callback = PolakoClient.parse_payment_callback(
-        payload=body.decode('utf-8'),
-        secret_key=app.config['SECRET_KEY']
-    )
-    
+    try:
+        callback = PolakoClient.parse_payment_callback(payload=body.decode("utf-8"), secret_key=SECRET_KEY)
+    except AssertionError:
+        raise HTTPException(status_code=400, detail="invalid signature")
+
     if callback.success:
-        # Process successful payment
-        pass
-    
-    return {'status': 'ok'}
+        pass  # Process successful payment
+
+    return {"status": "ok"}
 ```
 
 ### Quart Example (Async Flask)
 
 ```python
-from quart import Quart, request, jsonify
-from polako.sdk import PolakoClient, OrderDetails, OrderItem, CustomerInfo
 from decimal import Decimal
 from uuid import UUID
 
+from polako.sdk import CustomerAddress, CustomerInfo, OrderDetails, OrderItem, PolakoClient
+from quart import Quart, jsonify, request
+
 app = Quart(__name__)
 
-@app.route('/create-payment', methods=['POST'])
+PLATFORM_ID = UUID("00000000-0000-0000-0000-000000000000")  # your platform ID
+SECRET_KEY = "your-secret-key"  # your secret key
+
+
+@app.route("/create-payment", methods=["POST"])
 async def create_payment():
-    data = await request.json
-    
-    async with PolakoClient(test_env=True) as client:
-        order = OrderDetails(
-            currency="RSD",
-            language="en",
-            order_id=data['order_id'],
-            items=[OrderItem(**item) for item in data['items']],
-            total=Decimal(data['total'])
-        )
-        
-        customer = CustomerInfo(**data['customer'])
-        
-        session = await client.create_order(
-            order=order,
-            customer=customer,
-            platform_id=UUID(app.config['PLATFORM_ID']),
-            secret_key=app.config['SECRET_KEY']
-        )
-        
-        return jsonify({
-            'payment_url': session.paymentPageUrl,
-            'session_id': session.paymentSessionId
-        })
+    data = await request.get_json()
 
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    body = await request.data
-    callback = PolakoClient.parse_payment_callback(
-        payload=body.decode('utf-8'),
-        secret_key=app.config['SECRET_KEY']
+    order = OrderDetails(
+        currency="RSD",
+        language="en",
+        order_id=data["order_id"],
+        items=[
+            OrderItem(
+                code=item["code"],
+                name=item["name"],
+                description=item["description"],
+                price=Decimal(item["price"]),
+                quantity=item["quantity"],
+                tax=item["tax"],
+            )
+            for item in data["items"]
+        ],
+        total=Decimal(data["total"]),
     )
-    
-    if callback.success:
-        # Process successful payment
-        pass
-    
-    return '', 200
-```
+    customer_data = data["customer"]
+    customer = CustomerInfo(
+        first_name=customer_data["first_name"],
+        last_name=customer_data["last_name"],
+        email=customer_data["email"],
+        phone=customer_data["phone"],
+        address=CustomerAddress(
+            address=customer_data["address"]["street"],
+            city=customer_data["address"]["city"],
+            state=customer_data["address"]["state"],
+            zip=customer_data["address"]["zip"],
+            country=customer_data["address"]["country"],
+        ),
+    )
 
+    async with PolakoClient(test_env=True) as client:
+        session = await client.create_order(order, customer, PLATFORM_ID, SECRET_KEY)
+
+    return jsonify({"payment_url": session.paymentPageUrl, "session_id": session.paymentSessionId})
+
+
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    body = await request.get_data()
+    try:
+        callback = PolakoClient.parse_payment_callback(payload=body.decode("utf-8"), secret_key=SECRET_KEY)
+    except AssertionError:
+        return "invalid signature", 400
+
+    if callback.success:
+        pass  # Process successful payment
+
+    return "", 200
+```
 ## Best Practices
 
 1. **Always use signature verification** in production for webhooks

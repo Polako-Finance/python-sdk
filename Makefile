@@ -18,26 +18,28 @@ help: ## Show this help message
 install: ## Install dependencies
 	@echo "$(BLUE)Installing dependencies...$(NC)"
 	poetry install
+	poetry -C tests install
 	@echo "$(GREEN)✓ Dependencies installed$(NC)"
 
 install-dev: ## Install development dependencies
 	@echo "$(BLUE)Installing development dependencies...$(NC)"
 	poetry install --with dev
+	poetry -C tests install
 	poetry run pre-commit install
 	@echo "$(GREEN)✓ Development environment ready$(NC)"
 
 test: ## Run tests
 	@echo "$(BLUE)Running tests...$(NC)"
-	poetry run pytest tests/ -v --tb=short
+	poetry -C tests run pytest
 
 test-cov: ## Run tests with coverage
 	@echo "$(BLUE)Running tests with coverage...$(NC)"
-	poetry run pytest tests/ -v --cov=polako_common --cov-report=html --cov-report=term
-	@echo "$(GREEN)✓ Coverage report generated in htmlcov/$(NC)"
+	poetry -C tests run pytest --cov=polako.sdk --cov-report=html --cov-report=term
+	@echo "$(GREEN)✓ Coverage report generated in tests/htmlcov/$(NC)"
 
 test-watch: ## Run tests in watch mode
 	@echo "$(BLUE)Running tests in watch mode...$(NC)"
-	poetry run pytest-watch tests/ -v
+	poetry -C tests run pytest-watch . -v
 
 lint: ## Run linters
 	@echo "$(BLUE)Running linters...$(NC)"
@@ -95,6 +97,12 @@ release-minor: ## Bump minor version and create GitHub release (0.1.0 -> 0.2.0)
 release-major: ## Bump major version and create GitHub release (0.1.0 -> 1.0.0)
 	@poetry version major
 	@bash scripts/create_release.sh
+
+check-docs: ## Check that code blocks in README/examples match the SDK
+	poetry run python scripts/check_docs.py
+
+docs-update: ## Accept reviewed documentation changes (updates scripts/docs_manifest.json)
+	poetry run python scripts/check_docs.py --update
 
 check: lint test ## Run all checks (lint + test)
 	@echo "$(GREEN)✓ All checks passed$(NC)"
