@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-12
+
 ### Added
 - Managing subscriptions: `PolakoClient.list_subscriptions()` (one page of the subscriptions of your company, filtered by status, interval, text and creation time, sorted, with `limit` and `offset`; returns a `SubscriptionPage`), `get_subscription()` (a `SubscriptionDetails`: the customer, the card without its token, the charge history with the `payment_session_id` of every charge, and the event journal), and `pause_subscription()`, `resume_subscription()` and `cancel_subscription()`. They use the same `company_id` and `api_key` as `create_subscription`, work with the platform API key and are never retried. New public names: `SubscriptionPage`, `SubscriptionSummary`, `SubscriptionDetails`, `SubscriptionCustomer`, `SavedCard`, `ChargeAttempt`, `SubscriptionEvent`, `SubscriptionStatus`, `ChargeAttemptStatus`, `NotFoundError`. Documented in the README ("Managing a subscription") and shown in `examples/subscription_management_example.py`.
 - Documentation for subscriptions: the "Subscriptions" section of the README (creating a subscription, the card registration page, webhooks, the failed-registration notification, errors) and a complete merchant server in `examples/subscription_example.py`.
@@ -82,7 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: async client (httpx), HMAC-SHA256 signed `create_order`, payment callback parsing, PyPI publishing.
 
-[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.9...HEAD
+[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.0...HEAD
+[0.2.0]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.9...release-v0.2.0
 [0.1.9]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.8...release-v0.1.9
 [0.1.8]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.7...release-v0.1.8
 [0.1.7]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.6...release-v0.1.7
