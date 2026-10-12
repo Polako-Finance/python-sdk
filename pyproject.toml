@@ -1,6 +1,6 @@
 [project]
 name = "polako-finance"
-version = "0.1.9"
+version = "0.2.0"
 description = "Official async Python SDK for Polako Finance payment gateway"
 authors = [{ name = "Polako Finance", email = "support@polako-finance.com" }]
 readme = {content-type = "text/markdown", file = "README.pypi.md"}
