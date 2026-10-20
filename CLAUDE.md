@@ -34,4 +34,4 @@ make build            # poetry build
 - HMAC-SHA256 signature authentication (not Bearer tokens)
 - Targets payment-gateway endpoints (minimal migration impact)
 - Currencies: RSD | Languages: sr, en, ru
-- PyPI package: `polako-finance` v0.1.9
+- PyPI package: `polako-finance` v0.2.1

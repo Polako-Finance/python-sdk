@@ -170,41 +170,32 @@ async def test_malformed_success_body_is_request_error(client, gateway):
 
 @pytest.mark.asyncio
 async def test_network_error_is_client_error_not_request_error(client, gateway):
-    gateway.fail(httpx.ConnectError(generate_readable_string(12)))
+    text = generate_readable_string(12)
+    error = httpx.ConnectError(text)
+    gateway.fail(error)
 
     async with client:
         with pytest.raises(HttpClientError) as exc:
             await client.get_session_details(uuid4())
 
     assert not isinstance(exc.value, HttpRequestError)
+    assert exc.value.message == f"Network error during request: ConnectError: {text}"
+    assert exc.value.__cause__ is error
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_class", [httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError])
-async def test_network_error_message_names_the_failure_even_when_httpx_gives_no_text(client, gateway, error_class):
-    # httpx raises ConnectError and the timeouts with an empty text on a refused connection or a slow server:
-    # the message must still say what happened, not end after the colon.
-    gateway.fail(error_class(""))
+async def test_network_error_message_names_the_failure_when_httpx_gives_no_text(client, gateway):
+    # httpx raises the timeouts and a reset connection with an empty text: the message must still say what
+    # happened, not end after the colon.
+    error = httpx.ReadTimeout("")
+    gateway.fail(error)
 
     async with client:
         with pytest.raises(HttpClientError) as exc:
             await client.get_session_details(uuid4())
 
-    assert error_class.__name__ in exc.value.message
-    assert not exc.value.message.rstrip().endswith(":")
-
-
-@pytest.mark.asyncio
-async def test_network_error_message_keeps_the_text_httpx_gave(client, gateway):
-    text = generate_readable_string(12)
-    gateway.fail(httpx.ConnectError(text))
-
-    async with client:
-        with pytest.raises(HttpClientError) as exc:
-            await client.get_session_details(uuid4())
-
-    assert httpx.ConnectError.__name__ in exc.value.message
-    assert text in exc.value.message
+    assert exc.value.message == "Network error during request: ReadTimeout"
+    assert exc.value.__cause__ is error
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
 
 
 def _describe_network_error(error: httpx.RequestError) -> str:
-    """The failure's class and text. httpx raises a refused connection and the timeouts with an empty text, so the
+    """The failure's class and text. httpx raises the timeouts and a reset connection with an empty text, so the
     class name is what says what happened; the original error stays available as ``__cause__``."""
     text = str(error).strip()
     name = type(error).__name__
