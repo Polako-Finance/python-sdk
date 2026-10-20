@@ -23,7 +23,12 @@ from polako.sdk import (
     InvalidHeaderValueError,
     PolakoClient,
 )
-from polako.sdk._async_client import _CUT_CONNECTION_REASONS, _DAMAGED_RECORD_REASONS, AsyncHttpClient
+from polako.sdk._async_client import (
+    _CUT_CONNECTION_REASONS,
+    _DAMAGED_RECORD_REASONS,
+    AsyncHttpClient,
+    _is_sdk_module,
+)
 from polako.sdk._constants import REFUND_REASON_MAX_LENGTH, REFUND_REASON_MIN_LENGTH
 from tests.factories import (
     make_customer_info,
@@ -41,7 +46,12 @@ from tests.factories import (
     make_success_step,
     sign,
 )
-from tests.generators import generate_random_host, generate_readable_string, generate_short_timeout
+from tests.generators import (
+    WAIT_LIMIT_SECONDS,
+    generate_random_host,
+    generate_readable_string,
+    generate_short_timeout,
+)
 
 
 def keyed() -> dict:
@@ -738,6 +748,16 @@ async def test_leaving_more_often_than_entering_warns_and_changes_nothing(gatewa
     assert http._entered == 0 and http._client is None
 
 
+async def until(condition):
+    """Let the event loop run until the condition holds; fail, not hang, if it does not."""
+
+    async def spin():
+        while not condition():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(spin(), WAIT_LIMIT_SECONDS)
+
+
 def last_user_closes(http, monkeypatch):
     """Make the next call the last user of the client: the holder leaves while the call is running."""
 
@@ -748,8 +768,10 @@ def last_user_closes(http, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_exit_without_an_entry_does_not_replace_an_error_that_is_propagating(caplog):
-    # A merchant's filters can turn a warning into an error; while an error propagates, the warning goes to the log.
+@pytest.mark.parametrize("hook_passes_the_error", [True, False], ids=["exc_info-given", "hand-written-None"])
+async def test_an_exit_without_an_entry_does_not_replace_an_error_that_is_propagating(caplog, hook_passes_the_error):
+    # A merchant's filters can turn a warning into an error; while an error propagates, the warning goes to the log,
+    # also when a shutdown hook written by hand passes None instead of the error.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     marker = generate_readable_string(8)
 
@@ -760,7 +782,7 @@ async def test_an_exit_without_an_entry_does_not_replace_an_error_that_is_propag
                 try:
                     raise KeyError(marker)
                 finally:
-                    await http.__aexit__(*sys.exc_info())
+                    await http.__aexit__(*(sys.exc_info() if hook_passes_the_error else (None, None, None)))
 
     assert "exited more often than it was entered" in caplog.text
 
@@ -780,8 +802,7 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
     await http.__aenter__()
     last_user_closes(http, monkeypatch)
     call = asyncio.create_task(http.get(any_path()))
-    while tracking.closed == 0:
-        await asyncio.sleep(0)  # the close has started and waits at the gate
+    await until(lambda: tracking.closed == 1)  # the close has started and waits at the gate
 
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -789,10 +810,78 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
     assert tracking.completed == 0 and len(http._closing) == 1
 
     gate.set()
-    while http._closing:
-        await asyncio.sleep(0)  # the close task ends by itself and is dropped
+    await until(lambda: not http._closing)  # the close task ends by itself and is dropped
 
     assert tracking.completed == 1  # the connections were closed in the background
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is Python 3.11+; on 3.10 the race cannot be told")
+async def test_a_caller_cancelled_in_the_same_moment_as_the_close_task_still_gets_its_cancellation(
+    gateway, tracking, monkeypatch
+):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    await http.__aenter__()
+    last_user_closes(http, monkeypatch)
+    call = asyncio.create_task(http.get(any_path()))
+    await until(lambda: tracking.closed == 1)
+
+    for task in list(http._closing):
+        task.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)  # the close task is cancelled and the shield is done, the caller has not resumed yet
+    call.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert call.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_a_close_cancelled_before_it_ended_is_logged(gateway, tracking, caplog):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    await http.__aenter__()
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        closing = asyncio.create_task(http.__aexit__(None, None, None))
+        await until(lambda: tracking.closed == 1)
+        for task in list(http._closing):
+            task.cancel()
+        await closing  # the exit goes on: only the close task was cancelled
+        await until(lambda: not http._closing)
+
+    assert "was cancelled before it ended" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_error_of_the_close_itself_is_not_taken_for_the_deadline(client, gateway, tracking, platform, caplog):
+    gateway.respond(body=make_order_status_response())
+    text = generate_readable_string(12)
+    tracking.close_error = TimeoutError(text)  # raised by aclose at once, long before CLOSE_TIMEOUT
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert "timed out" not in caplog.text
+    assert f"Closing the HTTP client failed: TimeoutError: {text}" in caplog.text
+    assert caplog.records[-1].exc_info is not None
+
+
+@pytest.mark.parametrize(
+    "name, is_sdk",
+    [
+        ("polako.sdk", True),
+        ("polako.sdk._async_api", True),
+        ("polako.sdk_contrib.shutdown", False),
+        ("polako.sdkhelpers", False),
+        ("polako", False),
+        ("tests.test_client", False),
+    ],
+)
+def test_only_the_modules_of_the_sdk_package_are_skipped_when_the_warning_looks_for_the_merchant(name, is_sdk):
+    assert _is_sdk_module(name) is is_sdk
 
 
 @pytest.mark.asyncio
@@ -805,8 +894,7 @@ async def test_a_cancellation_of_the_close_task_itself_does_not_reach_a_caller_t
     http = client._http_client
 
     async def cancel_the_close_task():
-        while not http._closing:
-            await asyncio.sleep(0)
+        await until(lambda: http._closing)
         for task in list(http._closing):
             task.cancel()
 

@@ -78,3 +78,6 @@ def generate_naive_datetime() -> datetime:
 def generate_short_timeout() -> float:
     """A timeout of a few milliseconds, for a test that waits for it to run out."""
     return random.uniform(0.005, 0.02)
+
+
+WAIT_LIMIT_SECONDS = 5  # the longest a test waits for something to happen before it fails instead of hanging
