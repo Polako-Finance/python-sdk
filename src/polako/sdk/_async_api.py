@@ -98,7 +98,10 @@ class AsyncPolakoClient:
         """Exit async context manager.
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
-        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0.
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. While an error is
+        propagating the warning goes to the log instead. A failure of closing the HTTP client does not raise: it is
+        logged, and the close is given up after ``CLOSE_TIMEOUT`` seconds (10), so an exit can take that long if the
+        server does not answer the close.
         """
         await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
 

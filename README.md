@@ -293,6 +293,8 @@ All of them are `HttpRequestError`s, so `except HttpRequestError` still catches 
 
 The client is set up at `async with PolakoClient()`, not at a call. If `SSL_CERT_FILE` names a file that exists but is unreadable or malformed (from `httpx` 0.28 a missing file fails there too, before 0.28 it is skipped), or a proxy setting in the environment cannot be used (an unknown scheme, a malformed URL or port, a SOCKS proxy without the `socksio` package), that line raises `HttpClientError` (`Client set-up failed: ...`). Keep it inside the `try` of your error handling, as in the example under Error Handling.
 
+The SDK closes the connections it opened when a call ends (or when `async with` exits). If the server does not answer the close, the SDK gives up after 10 seconds (`CLOSE_TIMEOUT`), so a call that closes its own connection can take that long to return; a failure of the close is logged (logger `polako.sdk._async_client`, level warning) and never replaces the result of the call or the error you are handling. If your task is cancelled, or your own deadline (`asyncio.timeout`) runs out, while the SDK closes, the call leaves at once and the close finishes in the background.
+
 ### Managing a subscription
 
 Read and manage the subscriptions of your company with the same client and API key you create them with. The SDK sends

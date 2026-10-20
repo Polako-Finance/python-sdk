@@ -73,3 +73,8 @@ def generate_aware_datetime() -> datetime:
 def generate_naive_datetime() -> datetime:
     """A recent local time with no zone attached."""
     return generate_recent_datetime(days_ago=random.randint(0, 30)).replace(tzinfo=None)
+
+
+def generate_short_timeout() -> float:
+    """A timeout of a few milliseconds, for a test that waits for it to run out."""
+    return random.uniform(0.005, 0.02)

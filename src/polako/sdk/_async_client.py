@@ -5,8 +5,9 @@ import json
 import logging
 import re
 import ssl
+import sys
 import warnings
-from typing import Any, Dict, Iterator, Literal, Optional, Type, TypeVar, Union
+from typing import Any, Dict, Iterator, Literal, Optional, Set, Type, TypeVar, Union
 
 import anyio
 import httpx
@@ -197,35 +198,30 @@ def _is_retryable_error(error: BaseException) -> bool:
     return isinstance(error, _TRANSIENT_OS_ERRORS + _CUT_STREAM_ERRORS)
 
 
-CLOSE_TIMEOUT = 10.0  # seconds a call waits for the close of the client it was the last to use
-_closing: set = set()  # the tasks that close clients; the loop keeps only weak references to tasks
+CLOSE_TIMEOUT = 10.0  # seconds the close of a client may take before it is given up
+
+
+def _stacklevel_outside_sdk() -> int:
+    """The ``stacklevel`` for ``warnings.warn``, called from the function that calls this one, that points at the first
+    frame outside the SDK: the code of the merchant that made the mistake, not the SDK's own ``__aexit__``."""
+    level, frame = 1, sys._getframe(1)
+    while frame is not None and frame.f_globals.get("__name__", "").startswith("polako.sdk"):
+        frame, level = frame.f_back, level + 1
+    return level
 
 
 async def _close_with_timeout(client: httpx.AsyncClient) -> None:
-    """Close the client, bounded in time. A failure is logged and goes no further: it must not replace the outcome of
-    the call that closes the client (a subscription that was created)."""
+    """Close the client, bounded in time. No failure of the close goes further than the log: it must not replace the
+    outcome of the call that closes the client (a subscription that was created) or an error that is propagating."""
     try:
         await asyncio.wait_for(client.aclose(), CLOSE_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Closing the HTTP client timed out after %s seconds; its connections may stay open until they are collected",
+            CLOSE_TIMEOUT,
+        )
     except Exception as e:  # noqa: BLE001 - see above; the failure is logged, not dropped
-        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e))
-
-
-async def _close_quietly(client: httpx.AsyncClient) -> None:
-    """Close the client for a call that was the last to use it, and let no failure of the close out (see
-    ``_close_with_timeout``). The close runs as a task that the SDK keeps a reference to and that is waited for even if
-    the call is cancelled meanwhile, so that the connections are closed; the cancellation itself still reaches the
-    caller once the close is done."""
-    task = asyncio.ensure_future(_close_with_timeout(client))
-    _closing.add(task)
-    task.add_done_callback(_closing.discard)
-    cancelled: Optional[asyncio.CancelledError] = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as e:
-            cancelled = e  # keep waiting: the close is bounded by CLOSE_TIMEOUT
-    if cancelled is not None:
-        raise cancelled
+        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e), exc_info=True)
 
 
 class AsyncHttpClient:
@@ -283,6 +279,7 @@ class AsyncHttpClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._entered = 0  # how many `async with` blocks are open on this object
         self._in_flight = 0  # how many calls use the shared client at this moment
+        self._closing: Set[asyncio.Future] = set()  # the tasks that close clients, kept until they are done
 
     def _new_client(self) -> httpx.AsyncClient:
         """The httpx client. Building it reads the certificate file and the proxy settings of the environment, so it
@@ -318,28 +315,43 @@ class AsyncHttpClient:
         """Exit async context manager.
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
-        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0.
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. While an error is
+        propagating the warning goes to the log instead, because a warning that the merchant's filters turn into an
+        error would replace the error that is propagating.
+
+        A failure of closing the client does not raise: it is logged (see ``_close``).
         """
         if self._entered == 0:
-            warnings.warn(
-                "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            message = "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0"
+            if exc_type is None:
+                warnings.warn(message, RuntimeWarning, stacklevel=_stacklevel_outside_sdk())
+            else:
+                logger.warning(message)
             return
         self._entered -= 1
         await self._close_if_unused()
 
-    async def _close_if_unused(self, quiet: bool = False) -> None:
-        """Close the shared client once no ``async with`` is open and no call is using it. A call that is the last user
-        closes it ``quiet``ly: a failure of the close must not replace the outcome of the call (a subscription that was
-        created), and a cancellation of the call must not leave the connections open."""
+    async def _close_if_unused(self) -> None:
+        """Close the shared client once no ``async with`` is open and no call is using it."""
         if self._entered == 0 and self._in_flight == 0 and self._client is not None:
             client, self._client = self._client, None
-            if quiet:
-                await _close_quietly(client)
-            else:
-                await client.aclose()
+            await self._close(client)
+
+    async def _close(self, client: httpx.AsyncClient) -> None:
+        """Close the client in a task that the SDK keeps until it is done, bounded by ``CLOSE_TIMEOUT``, and wait for it.
+        No failure of the close comes out of here (see ``_close_with_timeout``).
+
+        If the caller is cancelled while it waits, it leaves at once, with its cancellation, and the close goes on in the
+        background to its end or its timeout. A cancellation of the close task itself (by shutdown code that cancels
+        every task, say) is not a cancellation of the caller and is not passed on."""
+        task = asyncio.ensure_future(_close_with_timeout(client))
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""
@@ -479,10 +491,10 @@ class AsyncHttpClient:
             return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
         finally:
             if owned:
-                await _close_quietly(client)
+                await self._close(client)
             else:
                 self._in_flight -= 1
-                await self._close_if_unused(quiet=True)
+                await self._close_if_unused()
 
     async def _attempts(
         self,
