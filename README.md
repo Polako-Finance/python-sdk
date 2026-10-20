@@ -291,7 +291,7 @@ All of them are `HttpRequestError`s, so `except HttpRequestError` still catches 
 `HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and so does an `api_key` that is not a string ("must be a string") or cannot be sent as a header (not printable ASCII, or whitespace at either end: a key read from a file often ends with a newline). An idempotency key that is blank, is neither a string nor a `UUID`, or cannot be sent raises
 `InvalidHeaderValueError` (a kind of `InvalidArgumentError`), and any other invalid argument is an `InvalidArgumentError`, before any request. All three are `ValueError`s, so `except ValueError` still catches them.
 
-The client is set up at `async with PolakoClient()`, not at a call. If `SSL_CERT_FILE` names a file that exists but is unreadable or malformed (with `httpx` 0.28 a missing file fails there too, with 0.25 it is skipped), or a proxy setting in the environment cannot be used (an unknown scheme, a SOCKS proxy without the `socksio` package), that line raises `HttpClientError` (`Client set-up failed: ...`). Keep it inside the `try` of your error handling, as in the example under Error Handling.
+The client is set up at `async with PolakoClient()`, not at a call. If `SSL_CERT_FILE` names a file that exists but is unreadable or malformed (from `httpx` 0.28 a missing file fails there too, before 0.28 it is skipped), or a proxy setting in the environment cannot be used (an unknown scheme, a SOCKS proxy without the `socksio` package), that line raises `HttpClientError` (`Client set-up failed: ...`). Keep it inside the `try` of your error handling, as in the example under Error Handling.
 
 ### Managing a subscription
 

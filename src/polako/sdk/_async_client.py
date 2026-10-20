@@ -130,14 +130,18 @@ RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProt
 # What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
 # aborted, refused or broken, a timeout of the system.
 _TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError)
-# TLS failures that a repeat cures: the connection was cut, or a record was damaged on the way. Only these are
-# retried; any other TLS failure (a certificate, a protocol version, a cipher, a key that is too small, a bad
-# certificate file) gives the same result again and is raised at once. They are named, not left to a list of the
-# permanent ones, so that a code the running Python does not know (its table of reasons is the one it was built
-# with, and an unknown code has ``reason`` None) is never retried by mistake. The ``reason`` code is matched, not the
-# text of the message.
-_TRANSIENT_TLS_ERRORS = (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError)
-_TRANSIENT_TLS_REASONS = frozenset(
+# TLS failures that a repeat cures. The ``reason`` code is matched, not the text of the message, and only what is
+# named is retried, so that a code the running Python does not know (its table of reasons is the one it was built
+# with, and an unknown code has ``reason`` None) is never retried by mistake.
+#
+# 1. A connection that was cut: the class says it. This is what can be retried while connecting (``httpx.ConnectError``,
+#    where the handshake happens). Any other TLS failure of the handshake (a certificate, a protocol version, a cipher,
+#    a key that is too small, a peer or a proxy that answers in plain text) is a deterministic fault of the setup, and
+#    a repeat gives the same result.
+_CUT_CONNECTION_ERRORS = (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError)
+# 2. On an established connection a TLS error reaches the SDK as it is, unwrapped (anyio re-raises it and httpcore
+#    has no mapping for it). There a damaged record or an alert in the middle of a stream is also cured by a repeat.
+_DAMAGED_RECORD_REASONS = frozenset(
     {
         "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
         "DECRYPTION_FAILED",
@@ -148,26 +152,27 @@ _TRANSIENT_TLS_REASONS = frozenset(
         "BAD_LENGTH",
         "PACKET_LENGTH_TOO_LONG",
         "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-        "UNEXPECTED_EOF_WHILE_READING",
+        "SSLV3_ALERT_UNEXPECTED_MESSAGE",
+        "TLSV1_ALERT_DECODE_ERROR",
     }
 )
 
 
-def _is_transient_tls_error(error: ssl.SSLError) -> bool:
-    return isinstance(error, _TRANSIENT_TLS_ERRORS) or getattr(error, "reason", None) in _TRANSIENT_TLS_REASONS
-
-
 def _is_retryable_error(error: BaseException) -> bool:
     """Whether a repeat can cure the failure. A repeat of a failure that is permanent gives the same result and spends
-    the rate limit, so it is not retried. The TLS error decides only for a failure to connect (``httpx.ConnectError``,
-    which is where the handshake happens and where a certificate, a protocol version or a cipher can fail) and for a
-    TLS error that nothing wrapped: only a cut connection or a damaged record is retried. A failure of an established
-    connection (a read or a write that broke) is retried by its kind, whatever TLS error caused it. Otherwise the
-    kind of the error decides."""
-    if isinstance(error, (httpx.ConnectError, ssl.SSLError)):
+    the rate limit, so it is not retried.
+
+    A failure to connect (``httpx.ConnectError``) with a TLS error on its chain is retried only if the connection was
+    cut. A TLS error that nothing wrapped comes from an established connection and is retried if the connection was
+    cut or a record was damaged. Every other error is retried by its kind; this includes ``ReadError`` and
+    ``WriteError``, which httpx raises for a stream that broke, and the end of a stream, which arrives as
+    ``RemoteProtocolError``."""
+    if isinstance(error, httpx.ConnectError):
         tls_error = next((link for link in _error_chain(error) if isinstance(link, ssl.SSLError)), None)
         if tls_error is not None:
-            return _is_transient_tls_error(tls_error)
+            return isinstance(tls_error, _CUT_CONNECTION_ERRORS)
+    elif isinstance(error, ssl.SSLError):
+        return isinstance(error, _CUT_CONNECTION_ERRORS) or getattr(error, "reason", None) in _DAMAGED_RECORD_REASONS
     if isinstance(error, RETRYABLE_ERRORS):
         return True
     return isinstance(error, _TRANSIENT_OS_ERRORS)
@@ -187,9 +192,8 @@ class AsyncHttpClient:
     and body, up to ``max_attempts`` attempts in total. A status such as 501 or 505, an unsupported address, too many
     redirects, a certificate that does not verify, a wrong TLS protocol version and a failure to set up the client (an
     unreadable certificate file, a proxy setting that cannot be used) are not cured by a repeat and are raised at once. A TLS
-    failure while connecting is told apart by the ``reason`` code of the error, not by its text; only a cut connection or a
-    damaged record is retried, and a read or a write that broke on an established connection is retried by its kind. Every
-    other request is sent exactly once.
+    failure while connecting is retried only if the connection was cut; on an established connection also a damaged record
+    is retried (told apart by the ``reason`` code of the error, not by its text). Every other request is sent exactly once.
     A failure is an ``HttpClientError`` whose message names the failure and, after a retry, the number of attempts.
     """
 
@@ -228,30 +232,32 @@ class AsyncHttpClient:
 
         self._client: Optional[httpx.AsyncClient] = None
         self._entered = 0  # how many `async with` blocks are open on this object
+        self._in_flight = 0  # how many calls use the shared client at this moment
 
     def _new_client(self) -> httpx.AsyncClient:
         """The httpx client. Building it reads the certificate file and the proxy settings of the environment, so it
         fails when ``SSL_CERT_FILE`` names a file that exists but is unreadable or malformed, or when a proxy setting
-        cannot be used (an unknown scheme, a SOCKS proxy without the ``socksio`` package). Whatever the kind of the
-        error, it is an ``HttpClientError`` with the error as the cause, and a repeat cannot cure it. What fails at set-up
-        depends on the version of httpx: with 0.25 a missing ``SSL_CERT_FILE`` is skipped, with 0.28 it fails here.
-        Only the errors of the environment are caught (``OSError``, ``ValueError``, ``ImportError``); a ``TypeError`` or
-        an ``AttributeError`` is a mistake in the code or in a version of httpx, and is not hidden."""
+        cannot be used (an unknown scheme, a bad URL or port, a SOCKS proxy without the ``socksio`` package). What fails
+        depends on the version of httpx: before 0.28 a missing ``SSL_CERT_FILE`` is skipped, from 0.28 it fails here.
+
+        A failure of the environment (``OSError``, ``ValueError``, ``ImportError``, ``httpx.InvalidURL``) is an
+        ``HttpClientError`` with the error as the cause, and a repeat cannot cure it. Any other error is a mistake in
+        the code or a change in httpx, and is raised as it is, not hidden as a failure of the network."""
         try:
             return httpx.AsyncClient(timeout=self.timeout)
-        except (OSError, ValueError, ImportError) as e:
+        except (OSError, ValueError, ImportError, httpx.InvalidURL) as e:
             raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """Enter async context manager.
 
         Raises:
-            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that is malformed (with
-                httpx 0.28 also one that is missing), or a proxy setting cannot be used. This happens here, not at a
-                call, so keep ``async with`` inside the ``try`` of your error handling.
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that is malformed
+                (from httpx 0.28 also one that is missing), or a proxy setting cannot be used. This happens
+                here, not at a call, so keep ``async with`` inside the ``try`` of your error handling.
 
-        Entering again (nested, or from another task) shares the client that is open; it is closed when the last
-        context exits.
+        Entering again (nested, or from another task) shares the client that is open. It is closed when the last
+        context has exited and no call is still using it.
         """
         if self._client is None:
             self._client = self._new_client()
@@ -259,9 +265,19 @@ class AsyncHttpClient:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit async context manager."""
-        self._entered = max(0, self._entered - 1)
-        if self._entered == 0 and self._client:
+        """Exit async context manager.
+
+        Raises:
+            RuntimeError: If the client is exited more often than it was entered
+        """
+        if self._entered == 0:
+            raise RuntimeError("The client was exited more often than it was entered")
+        self._entered -= 1
+        await self._close_if_unused()
+
+    async def _close_if_unused(self) -> None:
+        """Close the shared client once no ``async with`` is open and no call is using it."""
+        if self._entered == 0 and self._in_flight == 0 and self._client is not None:
             client, self._client = self._client, None
             await client.aclose()
 
@@ -397,11 +413,16 @@ class AsyncHttpClient:
         # so that a failure to set it up is not mistaken for a failure of an attempt and retried.
         owned = self._client is None
         client = self._new_client() if owned else self._client
+        if not owned:
+            self._in_flight += 1  # the last `async with` that exits meanwhile must not close the client under this call
         try:
             return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
         finally:
             if owned:
                 await client.aclose()
+            else:
+                self._in_flight -= 1
+                await self._close_if_unused()
 
     async def _attempts(
         self,

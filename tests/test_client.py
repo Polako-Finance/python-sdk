@@ -1,5 +1,6 @@
 """Every public payment method of the client against a fake gateway."""
 
+import asyncio
 import random
 import ssl
 from typing import Optional
@@ -17,7 +18,7 @@ from polako.sdk import (
     InvalidHeaderValueError,
     PolakoClient,
 )
-from polako.sdk._async_client import _TRANSIENT_TLS_REASONS, AsyncHttpClient
+from polako.sdk._async_client import _DAMAGED_RECORD_REASONS, AsyncHttpClient
 from tests.factories import (
     make_customer_info,
     make_idempotency_key,
@@ -289,9 +290,10 @@ def tls(reason: str, **params):
     return pytest.param(lambda text: tls_error(reason, text), id=reason, **params)
 
 
-# Written out here on purpose: the test below compares it with the list of the SDK, so that a reason cannot be
-# added to or taken from the SDK's list without a decision here.
-TRANSIENT_TLS_REASONS = [
+# The reason codes of TLS errors that a test pins. DAMAGED_RECORD_REASONS is written out here on purpose and compared
+# with the SDK's constant, so a reason cannot be added to or taken from the SDK's list without a decision here.
+# PERMANENT_TLS_REASONS are failures of the setup that a repeat does not cure; no test may find them on the SDK's list.
+DAMAGED_RECORD_REASONS = [
     "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
     "DECRYPTION_FAILED",
     "BAD_RECORD_MAC",
@@ -301,66 +303,86 @@ TRANSIENT_TLS_REASONS = [
     "BAD_LENGTH",
     "PACKET_LENGTH_TOO_LONG",
     "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-    "UNEXPECTED_EOF_WHILE_READING",
+    "SSLV3_ALERT_UNEXPECTED_MESSAGE",
+    "TLSV1_ALERT_DECODE_ERROR",
+]
+PERMANENT_TLS_REASONS = [
+    "CERTIFICATE_VERIFY_FAILED",
+    "WRONG_VERSION_NUMBER",
+    "TLSV1_ALERT_PROTOCOL_VERSION",
+    "UNSUPPORTED_PROTOCOL",
+    "SSLV3_ALERT_HANDSHAKE_FAILURE",
+    "BAD_DH_VALUE",
+    "NO_SHARED_CIPHER",
+    "NO_CERTIFICATE_OR_CRL_FOUND",
+    "EE_KEY_TOO_SMALL",
+    "TLSV1_ALERT_INTERNAL_ERROR",
+    "UNEXPECTED_EOF_WHILE_READING",  # CPython maps it to SSLEOFError; as a bare reason it is not a rule of its own
 ]
 
 
-def test_the_transient_tls_reasons_of_the_sdk_are_the_ones_the_tests_name():
-    assert set(TRANSIENT_TLS_REASONS) == set(_TRANSIENT_TLS_REASONS)
-    assert len(TRANSIENT_TLS_REASONS) == len(set(TRANSIENT_TLS_REASONS))
+def test_the_damaged_record_reasons_of_the_sdk_are_the_ones_the_tests_name():
+    assert set(DAMAGED_RECORD_REASONS) == set(_DAMAGED_RECORD_REASONS)
+    assert len(DAMAGED_RECORD_REASONS) == len(set(DAMAGED_RECORD_REASONS))
 
 
-TRANSIENT_FAILURES = [
-    pytest.param(lambda text: ssl.SSLEOFError(text), id="SSLEOFError"),
-    pytest.param(lambda text: ssl.SSLZeroReturnError(text), id="SSLZeroReturnError"),
-    pytest.param(lambda text: ssl.SSLSyscallError(text), id="SSLSyscallError"),
-    *[tls(reason) for reason in TRANSIENT_TLS_REASONS],
-    pytest.param(lambda text: ConnectionResetError(text), id="ConnectionResetError"),
-    pytest.param(lambda text: ConnectionAbortedError(text), id="ConnectionAbortedError"),
-    pytest.param(lambda text: ConnectionRefusedError(text), id="ConnectionRefusedError"),
-    pytest.param(lambda text: BrokenPipeError(text), id="BrokenPipeError"),
-    pytest.param(lambda text: TimeoutError(text), id="TimeoutError"),
-]
-
-PERMANENT_FAILURES = [
-    pytest.param(lambda text: ssl.SSLCertVerificationError(text), id="SSLCertVerificationError"),
-    tls("CERTIFICATE_VERIFY_FAILED"),
-    tls("WRONG_VERSION_NUMBER"),
-    tls("TLSV1_ALERT_PROTOCOL_VERSION"),
-    tls("UNSUPPORTED_PROTOCOL"),
-    tls("SSLV3_ALERT_HANDSHAKE_FAILURE"),
-    tls("BAD_DH_VALUE"),
-    tls("NO_SHARED_CIPHER"),
-    tls("NO_CERTIFICATE_OR_CRL_FOUND"),
-    tls("EE_KEY_TOO_SMALL"),
-    tls("TLSV1_ALERT_INTERNAL_ERROR"),
-    tls("SSLV3_ALERT_UNEXPECTED_MESSAGE"),
-    tls("TLSV1_ALERT_DECODE_ERROR"),
-    pytest.param(lambda text: tls_error(generate_readable_string(10).upper(), text), id="made-up-reason"),
-    pytest.param(lambda text: tls_error(None, text), id="no-reason"),
-    pytest.param(lambda text: FileNotFoundError(text), id="FileNotFoundError"),
-    pytest.param(lambda text: PermissionError(text), id="PermissionError"),
-]
+def test_no_permanent_reason_is_on_the_list_of_the_sdk():
+    assert not set(PERMANENT_TLS_REASONS) & set(_DAMAGED_RECORD_REASONS)
 
 
-def wrapped_by_httpx(make_cause, outer_class=httpx.ConnectError):
-    """The shape httpx really gives: an httpx error (a ConnectError while connecting), caused by the httpcore error
-    of the same name, which holds the original error as the context that `raise ... from None` suppressed."""
+CUT_CONNECTION_CLASSES = [ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError]
+OS_TRANSIENT_CLASSES = [ConnectionResetError, ConnectionAbortedError, ConnectionRefusedError, BrokenPipeError, TimeoutError]
+OS_PERMANENT_CLASSES = [FileNotFoundError, PermissionError]
+
+
+def cases(*makers):
+    return [pytest.param(make, id=name) for name, make in makers]
+
+
+# An error as it reaches the SDK from an established connection or from the system, nothing around it.
+UNWRAPPED_TRANSIENT = [
+    pytest.param(lambda text, c=c: c(text), id=c.__name__) for c in CUT_CONNECTION_CLASSES + OS_TRANSIENT_CLASSES
+] + [pytest.param(lambda text, r=r: tls_error(r, text), id=r) for r in DAMAGED_RECORD_REASONS]
+UNWRAPPED_PERMANENT = (
+    [pytest.param(lambda text: ssl.SSLCertVerificationError(text), id="SSLCertVerificationError")]
+    + [pytest.param(lambda text, r=r: tls_error(r, text), id=r) for r in PERMANENT_TLS_REASONS]
+    + [pytest.param(lambda text: tls_error(generate_readable_string(10).upper(), text), id="made-up-reason")]
+    + [pytest.param(lambda text: tls_error(None, text), id="no-reason")]
+    + [pytest.param(lambda text, c=c: c(text), id=c.__name__) for c in OS_PERMANENT_CLASSES]
+)
+
+
+def wrapped_by_httpx(make_cause):
+    """The shape httpx really gives while connecting: httpx.ConnectError, caused by httpcore.ConnectError, which holds
+    the original error as the context that `raise ... from None` suppressed."""
 
     def make(text):
-        inner = getattr(httpcore, outer_class.__name__)(generate_readable_string(8))
+        inner = httpcore.ConnectError(generate_readable_string(8))
         inner.__context__ = make_cause(text)
         inner.__suppress_context__ = True
-        outer = outer_class(generate_readable_string(8))
+        outer = httpx.ConnectError(generate_readable_string(8))
         outer.__cause__ = inner
         return outer
 
     return make
 
 
+# The same errors while connecting (the handshake): only a cut connection is cured by a repeat.
+CONNECT_TRANSIENT = [
+    pytest.param(wrapped_by_httpx(lambda text, c=c: c(text)), id=f"connect-{c.__name__}")
+    for c in CUT_CONNECTION_CLASSES + OS_TRANSIENT_CLASSES
+]
+CONNECT_PERMANENT = (
+    [pytest.param(wrapped_by_httpx(lambda text: ssl.SSLCertVerificationError(text)), id="connect-SSLCertVerificationError")]
+    + [pytest.param(wrapped_by_httpx(lambda text, r=r: tls_error(r, text)), id=f"connect-{r}") for r in PERMANENT_TLS_REASONS]
+    + [pytest.param(wrapped_by_httpx(lambda text, r=r: tls_error(r, text)), id=f"connect-{r}") for r in DAMAGED_RECORD_REASONS]
+    + [pytest.param(wrapped_by_httpx(lambda text: tls_error(None, text)), id="connect-no-reason")]
+)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("make_error", TRANSIENT_FAILURES + PERMANENT_FAILURES)
-async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gateway_answer(client, gateway, make_error):
+@pytest.mark.parametrize("make_error", UNWRAPPED_TRANSIENT + UNWRAPPED_PERMANENT + CONNECT_TRANSIENT + CONNECT_PERMANENT)
+async def test_a_failure_before_an_answer_is_a_client_error_not_a_gateway_answer(client, gateway, make_error):
     error = make_error(generate_readable_string(12))
     gateway.fail(error)
 
@@ -373,18 +395,7 @@ async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gatewa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "make_error",
-    TRANSIENT_FAILURES
-    + [
-        pytest.param(
-            wrapped_by_httpx(lambda text: tls_error("DECRYPTION_FAILED_OR_BAD_RECORD_MAC", text)), id="wrapped-BAD_MAC"
-        ),
-        pytest.param(wrapped_by_httpx(lambda text: tls_error("RECORD_LAYER_FAILURE", text)), id="wrapped-RECORD_LAYER_FAILURE"),
-        pytest.param(wrapped_by_httpx(lambda text: ssl.SSLSyscallError(text)), id="wrapped-SSLSyscallError"),
-        pytest.param(wrapped_by_httpx(lambda text: ConnectionResetError(text)), id="wrapped-ConnectionResetError"),
-    ],
-)
+@pytest.mark.parametrize("make_error", UNWRAPPED_TRANSIENT + CONNECT_TRANSIENT)
 async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway, sleeps, make_error):
     gateway.sequence(make_error(generate_readable_string(12)), make_success_step())
 
@@ -395,40 +406,7 @@ async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outer_class", [httpx.ReadError, httpx.WriteError], ids=["ReadError", "WriteError"])
-@pytest.mark.parametrize(
-    "make_cause",
-    [
-        pytest.param(lambda text: tls_error("UNEXPECTED_EOF_WHILE_READING", text), id="UNEXPECTED_EOF_WHILE_READING"),
-        pytest.param(lambda text: tls_error(None, text), id="no-reason"),
-        pytest.param(lambda text: tls_error("WRONG_VERSION_NUMBER", text), id="any-reason"),
-        pytest.param(lambda text: ConnectionResetError(text), id="ConnectionResetError"),
-    ],
-)
-async def test_a_failure_of_an_established_connection_is_retried_by_its_kind_whatever_its_cause(
-    gateway, sleeps, outer_class, make_cause
-):
-    gateway.sequence(wrapped_by_httpx(make_cause, outer_class)(generate_readable_string(12)), make_success_step())
-
-    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
-        await http.post(any_path(), request_body=any_body(), headers=keyed())
-
-    assert len(gateway.requests) == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "make_error",
-    PERMANENT_FAILURES
-    + [
-        pytest.param(wrapped_by_httpx(lambda text: ssl.SSLCertVerificationError(text)), id="wrapped-certificate"),
-        pytest.param(wrapped_by_httpx(lambda text: tls_error("WRONG_VERSION_NUMBER", text)), id="wrapped-WRONG_VERSION_NUMBER"),
-        pytest.param(
-            wrapped_by_httpx(lambda text: tls_error("SSLV3_ALERT_HANDSHAKE_FAILURE", text)), id="wrapped-HANDSHAKE_FAILURE"
-        ),
-        pytest.param(wrapped_by_httpx(lambda text: tls_error(None, text)), id="wrapped-no-reason"),
-    ],
-)
+@pytest.mark.parametrize("make_error", UNWRAPPED_PERMANENT + CONNECT_PERMANENT)
 async def test_a_permanent_failure_is_not_retried_even_when_the_request_is_keyed(gateway, sleeps, make_error):
     gateway.fail(make_error(generate_readable_string(12)))
 
@@ -437,6 +415,18 @@ async def test_a_permanent_failure_is_not_retried_even_when_the_request_is_keyed
             await http.post(any_path(), request_body=any_body(), headers=keyed())
 
     assert len(gateway.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_class", [httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError, httpx.ConnectError])
+async def test_an_error_of_httpx_with_no_tls_error_behind_it_is_retried_by_its_kind(gateway, sleeps, error_class):
+    # A stream that broke, the end of a stream (httpx reports it as a protocol error) or a connect that failed plainly.
+    gateway.sequence(error_class(generate_readable_string(12)), make_success_step())
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert len(gateway.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -465,6 +455,11 @@ class TrackingClient(httpx.AsyncClient):
     """An httpx client that records how often it is closed."""
 
     closed = 0
+    built = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).built += 1
+        super().__init__(*args, **kwargs)
 
     async def aclose(self):
         type(self).closed += 1
@@ -475,6 +470,7 @@ class TrackingClient(httpx.AsyncClient):
 def tracking(gateway, monkeypatch):
     """Every client the SDK builds is a TrackingClient that talks to the fake gateway."""
     TrackingClient.closed = 0
+    TrackingClient.built = 0
 
     def factory(*args, **kwargs):
         kwargs["transport"] = httpx.MockTransport(gateway)
@@ -530,35 +526,79 @@ async def test_a_client_of_async_with_entered_after_a_call_outside_it_is_closed_
 
 
 @pytest.mark.asyncio
-async def test_a_call_does_not_close_the_shared_client_when_the_context_is_exited_during_the_call(
-    gateway, tracking, monkeypatch
-):
+async def test_the_last_exit_does_not_close_the_client_under_a_call_of_another_task(gateway, tracking, monkeypatch):
     http = AsyncHttpClient(f"https://{generate_random_host()}")
+    started, release = asyncio.Event(), asyncio.Event()
 
-    async def exits_meanwhile(*args, **kwargs):
-        await http.__aexit__(None, None, None)
+    async def slow(*args, **kwargs):
+        started.set()
+        await release.wait()
 
-    async with http:
-        monkeypatch.setattr(http, "_attempts", exits_meanwhile)
-        await http.get(any_path())
+    await http.__aenter__()  # one task holds the context
+    monkeypatch.setattr(http, "_attempts", slow)
+    call = asyncio.create_task(http.get(any_path()))  # another task calls outside it and borrows the client
+    await started.wait()
 
-    assert tracking.closed == 1  # by the exit; the call added none
+    await http.__aexit__(None, None, None)  # the holder leaves while the call is in flight
+
+    assert tracking.closed == 0
+    release.set()
+    await call
+    assert tracking.closed == 1  # closed by the call that was the last user
 
 
 @pytest.mark.asyncio
-async def test_a_call_does_not_close_a_client_that_was_opened_during_the_call(gateway, tracking, monkeypatch):
+async def test_a_call_in_flight_does_not_close_a_client_that_was_opened_again(gateway, tracking, monkeypatch):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(*args, **kwargs):
+        started.set()
+        await release.wait()
+
+    await http.__aenter__()
+    monkeypatch.setattr(http, "_attempts", slow)
+    call = asyncio.create_task(http.get(any_path()))
+    await started.wait()
+    await http.__aexit__(None, None, None)
+    await http.__aenter__()  # entered again while the call is still using the first client
+
+    release.set()
+    await call
+
+    assert tracking.closed == 0  # the context is open: nobody closes the client
+    await http.__aexit__(None, None, None)
+    assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_tasks_entering_and_leaving_the_same_client_share_one_and_close_it_once(gateway, tracking):
+    gateway.respond(body=make_order_status_response())
     http = AsyncHttpClient(f"https://{generate_random_host()}")
 
-    async def exits_and_enters_meanwhile(*args, **kwargs):
+    async def use():
+        async with http:
+            await asyncio.sleep(0)
+            await http.get(any_path())
+            await asyncio.sleep(0)
+
+    await asyncio.gather(use(), use(), use())
+
+    assert tracking.built == 1
+    assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_leaving_more_often_than_entering_is_an_error_not_silence():
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    with pytest.raises(RuntimeError):
         await http.__aexit__(None, None, None)
-        await http.__aenter__()
 
     async with http:
-        monkeypatch.setattr(http, "_attempts", exits_and_enters_meanwhile)
-        await http.get(any_path())
-        assert tracking.closed == 1  # the first client, by the exit; the new one is still open
-
-    assert tracking.closed == 2
+        pass
+    with pytest.raises(RuntimeError):
+        await http.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -604,6 +644,22 @@ async def test_a_proxy_setting_that_cannot_be_used_is_a_client_error_not_a_raw_v
 
     assert exc.value.message.startswith("Client set-up failed: ")
     assert isinstance(exc.value.__cause__, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_proxy_url_is_a_client_error_not_a_raw_httpx_error(monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "HTTPS_PROXY", f"http://{generate_random_host()}:{generate_readable_string(3)}"
+    )  # a port that is not a number
+
+    with pytest.raises(HttpClientError) as exc:
+        async with AsyncHttpClient(f"https://{generate_random_host()}"):  # the set-up only: nothing is sent
+            pass
+
+    assert exc.value.message.startswith("Client set-up failed: ")
+    assert isinstance(exc.value.__cause__, httpx.InvalidURL)
 
 
 @pytest.mark.asyncio
