@@ -145,7 +145,11 @@ _TRANSIENT_TLS_REASONS = frozenset(
         "SSLV3_ALERT_BAD_RECORD_MAC",
         "RECORD_LAYER_FAILURE",
         "UNEXPECTED_RECORD",
-        "TLSV1_ALERT_INTERNAL_ERROR",
+        "BAD_LENGTH",
+        "PACKET_LENGTH_TOO_LONG",
+        "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
+        "SSLV3_ALERT_UNEXPECTED_MESSAGE",
+        "TLSV1_ALERT_DECODE_ERROR",
     }
 )
 
@@ -221,18 +225,22 @@ class AsyncHttpClient:
         self._client: Optional[httpx.AsyncClient] = None
 
     def _new_client(self) -> httpx.AsyncClient:
-        """The httpx client. Building it reads the certificates, so it fails when SSL_CERT_FILE or SSL_CERT_DIR points
-        to a file that is missing, unreadable or malformed; that is an ``HttpClientError``, and a repeat cannot cure it."""
+        """The httpx client. Building it reads the certificate file and the proxy settings of the environment, so it
+        fails when ``SSL_CERT_FILE`` names a file that exists but is unreadable or malformed, or when a proxy setting
+        cannot be used (an unknown scheme, a SOCKS proxy without the ``socksio`` package). Whatever the kind of the
+        error, it is an ``HttpClientError`` with the error as the cause, and a repeat cannot cure it."""
         try:
             return httpx.AsyncClient(timeout=self.timeout)
-        except OSError as e:
+        except Exception as e:
             raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """Enter async context manager.
 
         Raises:
-            HttpClientError: If the client cannot be set up, e.g. SSL_CERT_FILE points to a file that is missing
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that exists but is
+                malformed, or a proxy setting cannot be used. This happens here, not at a call, so keep ``async with``
+                inside the ``try`` of your error handling.
         """
         self._client = self._new_client()
         return self
@@ -372,11 +380,12 @@ class AsyncHttpClient:
 
         # Outside `async with` one client serves all attempts and is closed at the end; it is built before the loop,
         # so that a failure to set it up is not mistaken for a failure of an attempt and retried.
-        client = self._client or self._new_client()
+        owned = self._client is None
+        client = self._new_client() if owned else self._client
         try:
             return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
         finally:
-            if client is not self._client:
+            if owned:
                 await client.aclose()
 
     async def _attempts(

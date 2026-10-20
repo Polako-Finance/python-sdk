@@ -82,9 +82,9 @@ class AsyncPolakoClient:
         """Enter async context manager.
 
         Raises:
-            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` points to a file that is missing,
-                unreadable or malformed. This happens at ``async with``, not at a call, so keep that line inside the
-                ``try`` of your error handling.
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that exists but is
+                malformed, or a proxy setting cannot be used. This happens at ``async with``, not at a call, so keep
+                that line inside the ``try`` of your error handling.
         """
         await self._http_client.__aenter__()
         return self
