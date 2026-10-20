@@ -214,23 +214,39 @@ def _stacklevel_outside_sdk() -> int:
     return level
 
 
-async def _close_with_timeout(client: httpx.AsyncClient) -> None:
+def _log_failed_close(finished: "asyncio.Future") -> None:
+    """Log the failure of ``aclose``, whenever it comes: also one that comes after the SDK gave up waiting."""
+    if not finished.cancelled() and finished.exception() is not None:
+        error = finished.exception()
+        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(error), exc_info=error)
+
+
+def _log_cancelled_close(finished: "asyncio.Future") -> None:
+    """Log a close task that was cancelled, also one that was cancelled before it ran a single step."""
+    if finished.cancelled():
+        logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
+
+
+async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Future"]) -> None:
     """Close the client, bounded in time. No failure of the close goes further than the log: it must not replace the
     outcome of the call that closes the client (a subscription that was created) or an error that is propagating.
 
     The deadline is the SDK's own: ``aclose`` runs as a task that is waited for with a timeout, so that a
     ``TimeoutError`` that ``aclose`` raises by itself is a failure like any other and is never taken for the deadline.
+    The task is kept in ``keep`` until it is done, also after the SDK gave up waiting, because asyncio keeps only weak
+    references to tasks and an ``aclose`` that survives a cancellation could be collected in the middle.
 
-    A close that is cancelled, when the event loop shuts down, is logged too and then the cancellation goes on: the
-    connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself reports
+    A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see ``_close``);
+    the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself reports
     ``Task was destroyed but it is pending``."""
     closing = asyncio.ensure_future(client.aclose())
-    closing.add_done_callback(lambda finished: finished.cancelled() or finished.exception())  # nothing is left unread
+    keep.add(closing)
+    closing.add_done_callback(keep.discard)
+    closing.add_done_callback(_log_failed_close)
     try:
         done, _ = await asyncio.wait({closing}, timeout=CLOSE_TIMEOUT)
     except asyncio.CancelledError:
         closing.cancel()
-        logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
         raise
     if not done:
         closing.cancel()
@@ -238,13 +254,6 @@ async def _close_with_timeout(client: httpx.AsyncClient) -> None:
             "Closing the HTTP client timed out after %s seconds; its connections may stay open until they are collected",
             CLOSE_TIMEOUT,
         )
-        return
-    try:
-        closing.result()
-    except asyncio.CancelledError:
-        logger.warning("Closing the HTTP client was cancelled by the client itself; its connections may stay open")
-    except Exception as e:  # noqa: BLE001 - see above; the failure is logged, not dropped
-        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e), exc_info=True)
 
 
 class AsyncHttpClient:
@@ -338,18 +347,21 @@ class AsyncHttpClient:
         """Exit async context manager.
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
-        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. While an error is
-        This is a warning, not an error, and it stays one: a merchant's filter that turns warnings into errors does
-        not make it replace an error that is propagating, because then the warning is logged instead.
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. If the merchant's
+        filters turn warnings into errors the warning raises, so that a test suite catches it, unless an error is
+        propagating or being handled: then the warning is logged instead, because it would replace that error.
 
         A failure of closing the client does not raise: it is logged (see ``_close``).
         """
         if self._entered == 0:
             message = "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0"
+            handling_an_error = exc_type is not None or sys.exc_info()[0] is not None  # before the handler below
             try:
                 warnings.warn(message, RuntimeWarning, stacklevel=_stacklevel_outside_sdk())
-            except RuntimeWarning:  # the merchant's filters turn warnings into errors: not here, it could replace theirs
-                logger.warning(message)
+            except RuntimeWarning:  # the merchant's filters turn warnings into errors
+                if not handling_an_error:
+                    raise  # nothing to replace: let the merchant's test suite see it
+                logger.warning(message)  # an error is propagating or being handled: do not replace it
             return
         self._entered -= 1
         await self._close_if_unused()
@@ -367,10 +379,11 @@ class AsyncHttpClient:
         If the caller is cancelled while it waits, it leaves at once, with its cancellation, and the close goes on in the
         background to its end or its timeout. ``asyncio.wait`` is used, not ``shield``, because it tells the two
         cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
-        ends the wait (and is logged by the task itself), so a caller that is not cancelled goes on."""
-        task = asyncio.ensure_future(_close_with_timeout(client))
+        ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on."""
+        task = asyncio.ensure_future(_close_with_timeout(client, self._closing))
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
+        task.add_done_callback(_log_cancelled_close)
         await asyncio.wait({task})
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:

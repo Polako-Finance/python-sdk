@@ -484,6 +484,8 @@ class TrackingClient(httpx.AsyncClient):
     built = 0
     close_error = None
     close_gate = None  # an Event that a close waits for, to cancel a call while it is closing
+    survive_gate = None  # an Event that a close waits for after it was cancelled: an aclose that survives a cancellation
+    error_after_cancel = None  # raised by a close that was cancelled, instead of the cancellation
     completed = 0  # closes that ran to the end
 
     def __init__(self, *args, **kwargs):
@@ -493,7 +495,14 @@ class TrackingClient(httpx.AsyncClient):
     async def aclose(self):
         type(self).closed += 1
         if type(self).close_gate is not None:
-            await type(self).close_gate.wait()
+            try:
+                await type(self).close_gate.wait()
+            except asyncio.CancelledError:
+                if type(self).error_after_cancel is not None:
+                    raise type(self).error_after_cancel
+                if type(self).survive_gate is None:
+                    raise
+                await type(self).survive_gate.wait()
         await super().aclose()
         type(self).completed += 1
         if type(self).close_error is not None:
@@ -506,6 +515,8 @@ def tracking(gateway, monkeypatch):
     TrackingClient.closed = 0
     TrackingClient.built = 0
     TrackingClient.close_error = None
+    TrackingClient.survive_gate = None
+    TrackingClient.error_after_cancel = None
     TrackingClient.close_gate = None
     TrackingClient.completed = 0
 
@@ -698,7 +709,7 @@ async def test_the_count_of_calls_is_balanced_when_a_borrowed_call_is_cancelled_
         await call
 
     assert http._in_flight == 0
-    assert tracking.closed == 1  # the cancelled call still closed the client (the close is shielded)
+    assert tracking.closed == 1  # the cancelled call still closed the client (the close goes on in the background)
 
 
 @pytest.mark.asyncio
@@ -807,7 +818,7 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call  # the caller is not kept waiting for the close
-    assert tracking.completed == 0 and len(http._closing) == 1
+    assert tracking.completed == 0 and http._closing  # the close tasks are held while they run
 
     gate.set()
     await until(lambda: not http._closing)  # the close task ends by itself and is dropped
@@ -816,12 +827,13 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("steps", range(7))
+@pytest.mark.parametrize("steps", range(3))
 async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_gets_its_cancellation(
     gateway, tracking, monkeypatch, steps
 ):
     # The caller is cancelled `steps` turns of the event loop after the close task: the windows differ between Python
-    # versions (how many tasks `wait_for` and the like put between), so every one of them is tried.
+    # versions (how many tasks `wait_for` and the like put between), so each of them is tried. From the third turn on the
+    # call has already returned on every Python that was probed (3.10, 3.12, 3.13), and a case there would assert nothing.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set
     await http.__aenter__()
@@ -859,6 +871,65 @@ async def test_a_close_cancelled_before_it_ended_is_logged(gateway, tracking, ca
         await until(lambda: not http._closing)
 
     assert "was cancelled before it ended" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_task_that_runs_aclose_is_kept_after_the_sdk_gave_up_until_it_ends(gateway, tracking, monkeypatch, caplog):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    survive = tracking.survive_gate = asyncio.Event()  # aclose survives the cancellation of the deadline and goes on
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
+    await http.__aenter__()
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await http.__aexit__(None, None, None)  # gives up at the deadline
+
+    assert "timed out" in caplog.text
+    assert len(http._closing) == 1  # the aclose task is still held, though nobody waits for it
+    survive.set()
+    await until(lambda: not http._closing)
+    assert tracking.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failure_of_aclose_that_comes_after_the_sdk_gave_up_is_still_logged(gateway, tracking, monkeypatch, caplog):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    text = generate_readable_string(12)
+    tracking.error_after_cancel = OSError(text)  # aclose answers the cancellation of the deadline with a failure
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
+    await http.__aenter__()
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await http.__aexit__(None, None, None)
+        await until(lambda: f"Closing the HTTP client failed: OSError: {text}" in caplog.text)
+
+
+@pytest.mark.asyncio
+async def test_a_close_task_cancelled_before_its_first_step_is_logged(gateway, tracking, caplog):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    await http.__aenter__()
+    client = http._client
+    http._client = None  # the exit below would close it; here `_close` is called by hand
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        caller = asyncio.ensure_future(http._close(client))
+        await asyncio.sleep(0)  # `_close` has created the close task, which has not run a step yet
+        for task in list(http._closing):
+            task.cancel()
+        await caller
+
+    assert "was cancelled before it ended" in caplog.text
+    assert tracking.closed == 0  # aclose never ran: the log is the only trace
+
+
+@pytest.mark.asyncio
+async def test_the_warning_of_an_unbalanced_exit_fails_a_test_suite_that_turns_warnings_into_errors(client):
+    # Nothing is propagating or being handled: the merchant's filter gets what it asks for.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="exited more often"):
+            await client.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -912,6 +983,7 @@ async def test_the_warning_of_an_unbalanced_exit_is_emitted_when_an_error_was_ha
         (sdk.__name__.split(".")[0], False),
         (generate_readable_string(8), False),
     ],
+    ids=["package", "submodule", "deeper", "no-dot", "lookalike", "top-package", "random"],
 )
 def test_only_the_modules_of_the_sdk_package_are_skipped_when_the_warning_looks_for_the_merchant(name, is_sdk):
     assert _is_sdk_module(name) is is_sdk

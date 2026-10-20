@@ -98,9 +98,13 @@ class AsyncPolakoClient:
         """Exit async context manager.
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
-        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. While an error is
-        propagating the warning goes to the log instead. A failure of closing the HTTP client does not raise: it is
-        logged, and the close is given up after 10 seconds, which is an upper bound for a close that is unexpectedly slow.
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. If your filters turn
+        warnings into errors (``-W error``, pytest ``filterwarnings = error``) the warning raises, so that your tests
+        catch it, unless an error is propagating or being handled: then it is logged instead, so as not to replace that
+        error.
+
+        A failure of closing the HTTP client does not raise: it is logged, and the close is given up after 10 seconds,
+        an upper bound for a close that is unexpectedly slow.
         """
         await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
 
