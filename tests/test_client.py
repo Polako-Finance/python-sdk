@@ -1122,7 +1122,7 @@ async def test_an_aclose_task_cancelled_before_it_ran_while_the_close_task_is_no
         await until(lambda: not http._closing)
 
     assert caplog.text.count("no close was attempted") == 1  # once, not also from the done-callback
-    assert "although the SDK did not cancel it" not in caplog.text  # that line says aclose ran, and it did not
+    assert "although the SDK did not cancel it" not in caplog.text  # that line says aclose was called, and it was not
     assert "was cancelled before it ended" not in caplog.text
     assert tracking.closed == 0
 
@@ -1150,7 +1150,7 @@ async def test_a_close_task_cancelled_alone_after_its_first_step_is_logged_as_in
         await until(lambda: not http._closing)
 
     assert caplog.text.count("was cancelled before it ended") == 1
-    assert "no close was attempted" not in caplog.text  # aclose ran: the flag is set where it runs
+    assert "no close was attempted" not in caplog.text  # aclose was called: the flag is set where it is called
     assert tracking.closed == 1
 
 

@@ -238,12 +238,12 @@ async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None
     await client.aclose()
 
 
-def _log_unfinished(attempt: _CloseAttempt, message_if_aclose_ran: str) -> None:
+def _log_unfinished(attempt: _CloseAttempt, message_if_aclose_called: str) -> None:
     """The one place that tells a close that never began from one that did: if ``aclose`` was never called, no close
     was attempted and the client stays unclosed; otherwise the message of the case is logged (an interruption, or a
     foreign cancellation). The flag is set where ``aclose`` is called, not where its task is created: do not move it.
     The ways to a close that was never attempted are listed in the specification, not here."""
-    logger.warning(message_if_aclose_ran if attempt.started else _NOT_ATTEMPTED)
+    logger.warning(message_if_aclose_called if attempt.started else _NOT_ATTEMPTED)
 
 
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
