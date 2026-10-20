@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-20
+
 ### Fixed
 - The message of the `HttpClientError` raised for a network failure now names the failure. A refused connection and the timeouts come from `httpx` with an empty text, so the message used to end after the colon (`Network error during request: `); it is now `Network error during request: ConnectError` (or `ConnectError: <text>` when `httpx` gives one). The original error is still `__cause__`.
 
@@ -87,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: async client (httpx), HMAC-SHA256 signed `create_order`, payment callback parsing, PyPI publishing.
 
-[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.0...HEAD
+[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.1...HEAD
+[0.2.1]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.0...release-v0.2.1
 [0.2.0]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.9...release-v0.2.0
 [0.1.9]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.8...release-v0.1.9
 [0.1.8]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.7...release-v0.1.8
