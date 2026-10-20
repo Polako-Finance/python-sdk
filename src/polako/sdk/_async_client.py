@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import ssl
 from typing import Any, Dict, Literal, Optional, Type, TypeVar, Union
 
@@ -59,10 +60,13 @@ def _os_error_text(error: BaseException) -> str:
 
 def _describe_network_error(error: BaseException) -> str:
     """The failure's class and text. httpx raises the timeouts and a reset connection with an empty text, so the
-    class name is what says what happened; when there is no text, the reason found deeper on the error chain is
-    used. The original error stays available as ``__cause__``."""
+    class name is what says what happened. For an error of httpx without a text, the reason found deeper on the
+    error chain is used; any other error is described by itself, so that the text of an unrelated error found on
+    its chain is never taken for its reason. The original error stays available as ``__cause__``."""
     name = type(error).__name__
-    text = str(error).strip() or _os_error_text(error)
+    text = str(error).strip()
+    if not text and isinstance(error, httpx.RequestError):
+        text = _os_error_text(error)
     return _with_detail(name, text)
 
 
@@ -79,10 +83,26 @@ def is_sendable_header_value(value: Union[str, bytes]) -> bool:
     return value.isascii() and all(c.isprintable() or c == "\t" for c in value) and value == value.strip()
 
 
+# The characters of a header name (RFC 9110 token).
+_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+
+
+def _is_sendable_header_name(name: Union[str, bytes]) -> bool:
+    """A non-empty token of ASCII letters, digits and ``!#$%&'*+-.^_`|~``, as text or as bytes."""
+    if isinstance(name, bytes):
+        try:
+            name = name.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    return isinstance(name, str) and _HEADER_NAME.fullmatch(name) is not None
+
+
 def _check_header_values(headers: Dict[str, str]) -> None:
-    """Refuse a header value that cannot be sent, naming only the header: the value may be a secret and must not
-    appear in an error message, a traceback or ``__cause__``."""
+    """Refuse a header that cannot be sent before anything is sent. A value is named by its header only: it may be a
+    secret and must not appear in an error message, a traceback or ``__cause__``."""
     for name, value in headers.items():
+        if not _is_sendable_header_name(name):
+            raise InvalidArgumentError(f"The header name {name!r} cannot be sent: it must be a non-empty ASCII token")
         if not is_sendable_header_value(value):
             raise InvalidHeaderValueError(
                 f"The value of the {name!r} header cannot be sent: it must be text (or bytes) of printable ASCII without "
@@ -95,23 +115,37 @@ def _after_attempts(attempt: int) -> str:
     return f" (after {attempt} attempts; the message is about the last one)" if attempt > 1 else ""
 
 
+# A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+# What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
+# aborted, refused or broken, a timeout of the system, a TLS connection that was cut.
+_TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError, ssl.SSLEOFError, ssl.SSLZeroReturnError)
+# TLS errors that a repeat cures although they have no class of their own.
+_TRANSIENT_TLS_REASONS = ("BAD_RECORD_MAC", "DECRYPTION_FAILED")
+
+
+def _is_transient_os_error(error: BaseException) -> bool:
+    if isinstance(error, _TRANSIENT_OS_ERRORS):
+        return True
+    return isinstance(error, ssl.SSLError) and any(reason in str(error) for reason in _TRANSIENT_TLS_REASONS)
+
+
 def _is_retryable_error(error: BaseException) -> bool:
-    """Whether a repeat can cure the failure. A certificate that does not verify will not verify again: a repeat
-    would only spend the rate limit."""
+    """Whether a repeat can cure the failure. A repeat of a failure that is permanent gives the same result and spends
+    the rate limit, so these are not retried: a certificate that does not verify, a wrong protocol version, a failure
+    to set up the client (an unreadable certificate file). A TLS error found on the chain of the error decides too,
+    because httpx wraps it."""
     seen = set()
     current: Optional[BaseException] = error
     while current is not None and id(current) not in seen:
-        if isinstance(current, ssl.SSLCertVerificationError):
-            return False
         seen.add(id(current))
+        if isinstance(current, ssl.SSLError) and not _is_transient_os_error(current):
+            return False
         current = current.__cause__ or current.__context__
-    return isinstance(error, RETRYABLE_ERRORS)
-
-
-# A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
-RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
-# OSError covers what the transport does not wrap: a reset connection, a broken pipe, a TLS failure (ssl.SSLError).
-RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, OSError)
+    if isinstance(error, RETRYABLE_ERRORS):
+        return True
+    return isinstance(error, OSError) and _is_transient_os_error(error)
 
 
 class AsyncHttpClient:
@@ -123,9 +157,12 @@ class AsyncHttpClient:
 
     Retries: a request is retried only when it carries an ``Idempotency-Key`` header, because only then a repeat cannot
     do the work twice. Such a request is retried on HTTP 429, 500, 502, 503 and 504 and on network errors that a repeat can cure
-    (timeouts, connection and protocol failures), with the same key and body, up to ``max_attempts`` attempts in total. A status
-    such as 501 or 505, an unsupported address or too many redirects are not cured by a repeat and are raised at once. Every
-    other request is sent exactly once.
+    (timeouts, connection and protocol failures, and the transient errors of the transport that httpx does not wrap: a
+    connection that was reset, aborted, refused or broken, a timeout of the system, a cut TLS connection), with the same key
+    and body, up to ``max_attempts`` attempts in total. A status such as 501 or 505, an unsupported address, too many
+    redirects, a certificate that does not verify, a wrong TLS protocol version and a failure to set up the client (an
+    unreadable certificate file) are not cured by a repeat and are raised at once. Every other request is sent exactly once.
+    A failure is an ``HttpClientError`` whose message names the failure and, after a retry, the number of attempts.
     """
 
     def __init__(
@@ -289,6 +326,7 @@ class AsyncHttpClient:
             Deserialized response model instance or None if response_model is not provided
 
         Raises:
+            InvalidArgumentError: If a header name is not an ASCII token
             InvalidHeaderValueError: If a header value is not printable ASCII or has whitespace at either end
             HttpRequestError: If the gateway answers with an error status or the answer cannot be parsed
             HttpClientError: If the request fails before an answer arrives, e.g. a refused connection or a timeout

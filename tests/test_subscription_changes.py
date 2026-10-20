@@ -13,7 +13,7 @@ from polako.sdk import (
     PolakoClient,
 )
 from tests.error_cases import STATUS_ERRORS
-from tests.factories import make_credentials
+from tests.factories import TEST_HOST, make_credentials
 from tests.generators import generate_readable_string
 
 ACTIONS = ["pause", "resume", "cancel"]
@@ -36,7 +36,7 @@ async def test_it_is_a_patch_to_the_subscription_with_the_api_key(gateway, subsc
 
     request = gateway.last
     assert request.method == "PATCH"
-    assert request.url.host == "stg-api.infra.polako-finance.com"
+    assert request.url.host == TEST_HOST
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions/{subscription_id}/{action}"
     assert request.headers["company_api_key"] == credentials.api_key
 
@@ -79,7 +79,7 @@ async def test_the_id_is_a_uuid_or_text_in_any_form(gateway, subscription_client
 
 @pytest.mark.asyncio
 @EVERY_ACTION
-@pytest.mark.parametrize("bad", [None, "", "not-a-uuid", 42, generate_readable_string(10)])
+@pytest.mark.parametrize("bad", [None, "", 42, generate_readable_string(10)])
 async def test_a_bad_id_is_refused_before_any_request(gateway, subscription_client, action, bad):
     with pytest.raises(ValueError, match="subscription_id"):
         async with subscription_client:
@@ -124,7 +124,7 @@ async def test_each_failure_status_is_its_own_error_with_the_servers_reason(
 @EVERY_ACTION
 async def test_the_api_key_never_appears_in_an_error(gateway, subscription_client, credentials, action):
     with pytest.raises(ConflictError) as caught:
-        await change(gateway, subscription_client, action, status=409, body={"detail": "no"})
+        await change(gateway, subscription_client, action, status=409, body={"detail": generate_readable_string(8)})
 
     assert credentials.api_key not in str(caught.value) and credentials.api_key not in repr(caught.value)
 

@@ -10,7 +10,7 @@ import polako.sdk as sdk
 from polako.sdk import FormPost, HppFormPost, RedirectForm, render_registration_form
 from polako.sdk._subscription import parse_registration_form
 from tests.factories import make_form_post_response, make_hpp_form_response, make_redirect_form_response
-from tests.generators import generate_random_url, generate_readable_string
+from tests.generators import generate_random_host, generate_random_url, generate_readable_string
 
 # The names the card processor expects for the form_post fields: attribute of the model -> name of the input.
 FORM_POST_INPUTS = [
@@ -24,6 +24,7 @@ FORM_POST_INPUTS = [
     ("order_id", "OrderID"),
     ("signature", "Signature"),
 ]
+PAY_HOST = generate_random_host()
 HOSTILE = "\"><script>alert(1)</script>'&amp;<img src=x onerror=alert(1)>"
 
 
@@ -205,7 +206,7 @@ def test_the_script_never_contains_data_from_the_form(make_response):
 
 
 def test_values_names_and_addresses_are_escaped_so_the_browser_reads_back_what_was_given():
-    action = "https://pay.example.com/enter?a=1&b=\"2\"&c='3'"
+    action = f"https://{PAY_HOST}/enter?a=1&b=\"2\"&c='3'"
     fields = {HOSTILE: HOSTILE, "plain": HOSTILE + generate_readable_string(6)}
     form = HppFormPost(action=action, fields=fields)
 
@@ -230,7 +231,7 @@ def test_hostile_values_do_not_add_scripts_attributes_or_elements():
 
 
 def test_a_redirect_address_is_escaped_in_the_link_and_in_the_refresh():
-    action = 'https://pay.example.com/go?a=1&b="2"&c=<x>'
+    action = f'https://{PAY_HOST}/go?a=1&b="2"&c=<x>'
     form = RedirectForm(action=action)
 
     result = page(form, auto_submit=True)
@@ -246,22 +247,22 @@ def test_a_redirect_address_is_escaped_in_the_link_and_in_the_refresh():
         "JaVaScRiPt:alert(1)",
         "data:text/html,<script>alert(1)</script>",
         "vbscript:msgbox(1)",
-        "ftp://pay.example.com/enter",
-        "//pay.example.com/enter",
+        f"ftp://{PAY_HOST}/enter",
+        f"//{PAY_HOST}/enter",
         "/enter",
-        "pay.example.com/enter",
+        f"{PAY_HOST}/enter",
         "https://",
         "http://",
         "",
         "   ",
-        " https://pay.example.com/enter",
-        "https://pay.example.com/enter ",
-        "https://pay.example.com/a b",
-        "https://pay.example.com/en\nter",
-        "https://pay.example.com/en\tter",
-        "htt\tps://pay.example.com/enter",
-        "\x00https://pay.example.com/enter",
-        "https://pay.example.com/enter\x7f",
+        f" https://{PAY_HOST}/enter",
+        f"https://{PAY_HOST}/enter ",
+        f"https://{PAY_HOST}/a b",
+        f"https://{PAY_HOST}/en\nter",
+        f"https://{PAY_HOST}/en\tter",
+        f"htt\tps://{PAY_HOST}/enter",
+        f"\x00https://{PAY_HOST}/enter",
+        f"https://{PAY_HOST}/enter\x7f",
     ],
 )
 @pytest.mark.parametrize("make_form", [FormPost, HppFormPost, RedirectForm])
@@ -276,12 +277,12 @@ def test_an_address_that_is_not_http_or_https_is_refused(make_form, action):
         render_registration_form(form)
 
 
-@pytest.mark.parametrize("action", ["http://pay.example.com/enter", "https://pay.example.com:8443/enter?x=1"])
+@pytest.mark.parametrize("action", [f"http://{PAY_HOST}/enter", f"https://{PAY_HOST}:8443/enter?x=1"])
 def test_http_and_https_addresses_are_accepted(action):
     assert page(HppFormPost(action=action, fields={})).forms[0]["action"] == action
 
 
-@pytest.mark.parametrize("not_a_form", [None, "https://pay.example.com", {"action": "https://pay.example.com"}, 7])
+@pytest.mark.parametrize("not_a_form", [None, f"https://{PAY_HOST}", {"action": f"https://{PAY_HOST}"}, 7])
 def test_anything_that_is_not_a_registration_form_is_a_type_error(not_a_form):
     with pytest.raises(TypeError):
         render_registration_form(not_a_form)  # type: ignore[arg-type]

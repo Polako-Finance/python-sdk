@@ -11,6 +11,7 @@ import random
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, NamedTuple, Optional, Tuple
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from polako.sdk import (
@@ -24,7 +25,7 @@ from polako.sdk import (
     RefundItem,
     SubscriptionStatus,
 )
-from polako.sdk._constants import LANGUAGES, TAX_SCHEMAS
+from polako.sdk._constants import BASE_URL_PROD, BASE_URL_TEST, LANGUAGES, TAX_SCHEMAS
 from polako.sdk._subscription import SubscribeRequest
 from tests.generators import (
     generate_api_key,
@@ -44,6 +45,9 @@ CURRENCIES = ("RSD", "RUB", "EUR", "USD")
 LOCALES = ("sr", "en", "ru")
 # ISO 4217 numeric code for RSD, as the card processor expects it in a form post.
 RSD_NUMERIC_CODE = "941"
+
+TEST_HOST = urlparse(BASE_URL_TEST).hostname
+PROD_HOST = urlparse(BASE_URL_PROD).hostname
 
 
 class Credentials(NamedTuple):

@@ -19,7 +19,7 @@ from polako.sdk import (
     SubscriptionSummary,
 )
 from tests.error_cases import STATUS_ERRORS
-from tests.factories import make_credentials, make_subscription_detail_payload, make_subscription_page_payload
+from tests.factories import TEST_HOST, make_credentials, make_subscription_detail_payload, make_subscription_page_payload
 from tests.generators import generate_aware_datetime, generate_readable_string, generate_recent_date
 
 
@@ -64,7 +64,7 @@ async def test_it_is_a_get_with_the_api_key_and_nothing_else_signed(gateway, sub
 
     request = gateway.last
     assert request.method == "GET"
-    assert request.url.host == "stg-api.infra.polako-finance.com"
+    assert request.url.host == TEST_HOST
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions{call.path_tail}"
     assert request.headers["company_api_key"] == credentials.api_key
     assert "Idempotency-Key" not in request.headers
@@ -105,7 +105,7 @@ async def test_each_failure_status_is_its_own_error(gateway, subscription_client
 @pytest.mark.parametrize("call", CALLS)
 async def test_the_api_key_never_appears_in_an_error(gateway, subscription_client, credentials, call):
     with pytest.raises(NotFoundError) as caught:
-        await run(gateway, subscription_client, call, status=404, body={"detail": "no"})
+        await run(gateway, subscription_client, call, status=404, body={"detail": generate_readable_string(8)})
 
     assert credentials.api_key not in str(caught.value) and credentials.api_key not in repr(caught.value)
 
@@ -186,7 +186,7 @@ async def test_get_takes_the_id_as_a_uuid_or_as_text_in_any_form(gateway, subscr
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", [None, "", "not-a-uuid", 42, generate_readable_string(10)])
+@pytest.mark.parametrize("bad", [None, "", 42, generate_readable_string(10)])
 async def test_get_refuses_a_bad_id_before_any_request(gateway, subscription_client, bad):
     with pytest.raises(ValueError, match="subscription_id"):
         async with subscription_client:

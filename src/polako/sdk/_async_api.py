@@ -359,7 +359,8 @@ class AsyncPolakoClient:
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
             InvalidArgumentError: Input validation errors, e.g. ``amount`` is not greater than zero
-            InvalidHeaderValueError: If ``idempotency_key`` is not printable ASCII or has whitespace at either end
+            InvalidHeaderValueError: If ``idempotency_key`` is blank, not a string or a UUID, not printable ASCII, or has
+                whitespace at either end
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
@@ -382,11 +383,11 @@ class AsyncPolakoClient:
             idempotency_key = str(idempotency_key)
         if idempotency_key is not None:
             if not isinstance(idempotency_key, str):
-                raise InvalidArgumentError(
+                raise InvalidHeaderValueError(
                     f"'idempotency_key' must be a UUID or a string, got {type(idempotency_key).__name__}"
                 )
             if not idempotency_key.strip():
-                raise InvalidArgumentError("'idempotency_key' must not be empty")
+                raise InvalidHeaderValueError("'idempotency_key' must not be empty")
             if not is_sendable_header_value(idempotency_key):
                 raise InvalidHeaderValueError(
                     "'idempotency_key' must be printable ASCII without leading or trailing whitespace"
@@ -424,8 +425,10 @@ class AsyncPolakoClient:
             raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
         if not self._api_key:
             raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        # The key itself is never put in a message: it would reach logs and tracebacks.
+        if not isinstance(self._api_key, str):
+            raise ConfigurationError(f"'api_key' must be a string, got {type(self._api_key).__name__}")
         if not is_sendable_header_value(self._api_key):
-            # The key itself is never put in the message: it would reach logs and tracebacks.
             raise ConfigurationError(
                 "'api_key' must be printable ASCII without leading or trailing whitespace "
                 "(a key read from a file often ends with a newline: strip it)"

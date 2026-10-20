@@ -26,14 +26,16 @@ from polako.sdk import (
     UnknownRegistrationFormError,
 )
 from tests.factories import (
+    TEST_HOST,
     make_form_post_response,
     make_hpp_form_response,
     make_idempotency_key,
+    make_order_status_response,
     make_redirect_form_response,
     make_subscribe_args,
     make_subscribe_response,
 )
-from tests.generators import generate_readable_string
+from tests.generators import generate_random_host, generate_readable_string
 
 UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
@@ -52,7 +54,7 @@ async def test_request_goes_to_the_company_subscriptions_endpoint(gateway, subsc
 
     request = gateway.last
     assert request.method == "POST"
-    assert request.url.host == "stg-api.infra.polako-finance.com"
+    assert request.url.host == TEST_HOST
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions"
 
 
@@ -85,9 +87,7 @@ async def test_body_is_camel_case_json(gateway, subscription_client):
 
 @pytest.mark.asyncio
 async def test_the_api_key_header_is_only_sent_on_subscription_calls(gateway, subscription_client):
-    gateway.respond(
-        body={"session_id": str(uuid4()), "status": "created", "created_at": "x", "total": 1.0, "currency": "RSD", "items": []}
-    )
+    gateway.respond(body=make_order_status_response())
 
     async with subscription_client as client:
         await client.check_order_status(uuid4(), uuid4(), generate_readable_string(16))
@@ -152,7 +152,7 @@ async def test_retry_reuses_the_generated_key_and_the_body(gateway, sleeps, subs
 @pytest.mark.asyncio
 async def test_retry_after_a_network_error_succeeds(gateway, sleeps, subscription_client):
     response = make_subscribe_response()
-    gateway.sequence(httpx.ConnectError("boom"), {"status": 201, "body": response})
+    gateway.sequence(httpx.ConnectError(generate_readable_string(8)), {"status": 201, "body": response})
 
     async with subscription_client as client:
         created = await client.create_subscription(**make_subscribe_args(), idempotency_key=make_idempotency_key())
@@ -179,7 +179,7 @@ async def test_repeating_a_call_with_the_same_key_sends_the_same_key(gateway, cr
 
 @pytest.mark.asyncio
 async def test_persistent_server_error_gives_up_after_the_bounded_attempts(gateway, sleeps, subscription_client):
-    gateway.respond(status=502, text='{"detail": "provider rejected"}')
+    gateway.respond(status=502, body={"detail": generate_readable_string(12)})
 
     async with subscription_client as client:
         with pytest.raises(ServerError) as exc:
@@ -195,7 +195,7 @@ async def test_persistent_server_error_gives_up_after_the_bounded_attempts(gatew
     [(401, UnauthorizedError), (403, ForbiddenError), (409, ConflictError), (422, RequestValidationError)],
 )
 async def test_client_errors_are_raised_without_retries(gateway, sleeps, subscription_client, status, expected):
-    gateway.respond(status=status, text='{"detail": "nope"}')
+    gateway.respond(status=status, body={"detail": generate_readable_string(12)})
 
     async with subscription_client as client:
         with pytest.raises(expected):
@@ -218,7 +218,7 @@ async def test_a_long_rate_limit_is_reported_with_retry_after(gateway, sleeps, s
 
 @pytest.mark.asyncio
 async def test_network_failure_is_a_client_error(gateway, sleeps, subscription_client):
-    gateway.fail(httpx.ConnectError("boom"))
+    gateway.fail(httpx.ConnectError(generate_readable_string(8)))
 
     async with subscription_client as client:
         with pytest.raises(HttpClientError) as exc:
@@ -259,8 +259,8 @@ async def test_missing_configuration_fails_before_any_request(gateway, credentia
         {"amount": Decimal("0")},
         {"amount": Decimal("9.999")},
         {"customer_email": ""},
-        {"success_url": "ftp://x"},
-        {"billing_interval": "fortnightly"},
+        {"success_url": "ftp://" + generate_random_host()},
+        {"billing_interval": generate_readable_string(10)},
         {"idempotency_key": ""},
     ],
 )
@@ -297,7 +297,7 @@ async def test_the_api_key_stays_out_of_repr_and_errors(gateway, subscription_cl
     assert credentials.api_key not in repr(subscription_client)
     assert str(credentials.company_id) in repr(subscription_client)
 
-    gateway.respond(status=401, text='{"detail": "Client platform not found for the provided API key."}')
+    gateway.respond(status=401, body={"detail": generate_readable_string(24)})
     async with subscription_client as client:
         with pytest.raises(UnauthorizedError) as exc:
             await client.create_subscription(**make_subscribe_args())
@@ -308,7 +308,7 @@ async def test_the_api_key_stays_out_of_repr_and_errors(gateway, subscription_cl
 
 @pytest.mark.asyncio
 async def test_a_malformed_success_body_is_a_request_error(gateway, subscription_client):
-    gateway.respond(status=201, text="not json")
+    gateway.respond(status=201, text=generate_readable_string(12))
 
     async with subscription_client as client:
         with pytest.raises(HttpRequestError):
@@ -322,7 +322,7 @@ async def test_a_malformed_success_body_is_a_request_error(gateway, subscription
         {},
         {"registrationForm": make_redirect_form_response()},
         {**make_subscribe_response(), "subscriptionId": None},
-        {**make_subscribe_response(), "subscriptionId": "not-a-uuid"},
+        {**make_subscribe_response(), "subscriptionId": generate_readable_string(8)},
         {"subscriptionId": str(uuid4())},
         {**make_subscribe_response(), "registrationForm": None},
     ],
