@@ -175,7 +175,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 
 ### Client lifecycle
 
-- The SDK is checked on asyncio only (retries wait with `asyncio.sleep`, the close uses asyncio tasks; where no asyncio loop runs, the close is a plain `aclose()` whose failure is logged). The client is set up once, before the first attempt: at `async with`, or at the start of a call outside it. A failure to
+- The SDK is checked on asyncio only (retries wait with `anyio.sleep`, the bounded close uses asyncio tasks; where no asyncio loop runs, the close is a plain `aclose()` whose failure is logged). The client is set up once, before the first attempt: at `async with`, or at the start of a call outside it. A failure to
   set it up is an `HttpClientError` `Client set-up failed: <class>[: <text>]`, never retried, for errors of the environment
   (`OSError`, `ImportError` for a SOCKS proxy without `socksio`, `ValueError` for an unknown proxy scheme,
   `httpx.InvalidURL` for a malformed proxy URL or port). Any other error at set-up is a mistake in the code or a change in
@@ -218,7 +218,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 - When the SDK gives up waiting (the deadline, or the cancellation of the waiting task) it cancels `aclose` and holds its
   task for 10 more seconds (`CLOSE_HOLD`), because asyncio keeps only weak references to tasks (the `aclose` task is kept for its whole run too); the hold ends as soon as
   `aclose` does. If `aclose` is still running then, the SDK logs that and stops holding it, and asyncio may report it as `Task was destroyed but it is pending`.
-- A caller cancelled while it waits for the close leaves at once with its cancellation; the close goes on in the background.
+- A caller cancelled while it waits for the close, or while its request is running, leaves at once with its cancellation; the close goes on in the background.
   A cancellation of the close task alone does not reach a caller that was not cancelled, but a caller cancelled in the same
   moment still gets its cancellation, on every supported Python. If the event loop shuts down before
   the close ends, the connections may stay open: a close cancelled when the loop cancels its tasks is logged, and a loop closed

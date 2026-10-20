@@ -638,6 +638,51 @@ async def test_tasks_entering_and_leaving_the_same_client_share_one_and_close_it
 
 
 @pytest.mark.asyncio
+async def test_a_call_cancelled_during_its_attempt_leaves_at_once_and_the_close_goes_on(gateway, tracking, monkeypatch):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    gate = tracking.close_gate = asyncio.Event()  # the close does not end by itself
+    started = asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(http, "_attempts", stalled)
+    call = asyncio.create_task(http.get(any_path()))
+    await asyncio.wait_for(started.wait(), WAIT_LIMIT_SECONDS)
+
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(call, WAIT_LIMIT_SECONDS)  # it does not wait for the close, which is stuck at the gate
+
+    assert http._closing and tracking.completed == 0
+    gate.set()
+    await until(lambda: tracking.completed == 1)
+
+
+@pytest.mark.asyncio
+async def test_the_exit_of_async_with_by_a_cancelled_task_leaves_at_once_and_the_close_goes_on(gateway, tracking):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    gate = tracking.close_gate = asyncio.Event()  # the close does not end by itself
+    await http.__aenter__()
+
+    await asyncio.wait_for(http.__aexit__(asyncio.CancelledError, asyncio.CancelledError(), None), WAIT_LIMIT_SECONDS)
+
+    assert http._closing and tracking.completed == 0
+    gate.set()
+    await until(lambda: tracking.completed == 1)
+
+
+@pytest.mark.asyncio
+async def test_the_wait_between_retries_is_made_with_anyio(monkeypatch):
+    import anyio
+
+    import polako.sdk._async_client as client_module
+
+    assert client_module._sleep is anyio.sleep
+
+
+@pytest.mark.asyncio
 async def test_where_no_asyncio_loop_runs_the_close_is_plain_and_cannot_replace_the_result(
     client, gateway, tracking, platform, monkeypatch, caplog
 ):
@@ -735,7 +780,7 @@ async def test_the_count_of_calls_is_balanced_when_a_borrowed_call_is_cancelled_
         await call
 
     assert http._in_flight == 0
-    assert tracking.closed == 1  # the cancelled call still closed the client (the close goes on in the background)
+    await until(lambda: tracking.closed == 1)  # the cancelled call still closes the client, in the background
 
 
 @pytest.mark.asyncio

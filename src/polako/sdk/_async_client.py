@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 IDEMPOTENCY_KEY_HEADER = "idempotency-key"
 
 # Indirection so tests can replace the wait between retries.
-_sleep = asyncio.sleep
+_sleep = anyio.sleep
 
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
@@ -417,7 +417,7 @@ class AsyncHttpClient:
         try:
             return httpx.AsyncClient(timeout=self.timeout)
         except (OSError, ValueError, ImportError, httpx.InvalidURL) as e:
-            raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
+            raise HttpClientError(f"Client set-up failed: {_describe_network_error(e)}") from e
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """Enter async context manager.
@@ -456,22 +456,23 @@ class AsyncHttpClient:
                 logger.warning(message)  # an error is propagating or being handled: do not replace it
             return
         self._entered -= 1
-        await self._close_if_unused()
+        await self._close_if_unused(wait=not (exc_type is not None and issubclass(exc_type, asyncio.CancelledError)))
 
-    async def _close_if_unused(self) -> None:
+    async def _close_if_unused(self, wait: bool = True) -> None:
         """Close the shared client once no ``async with`` is open and no call is using it."""
         if self._entered == 0 and self._in_flight == 0 and self._client is not None:
             client, self._client = self._client, None
-            await self._close(client)
+            await self._close(client, wait)
 
-    async def _close(self, client: httpx.AsyncClient) -> None:
+    async def _close(self, client: httpx.AsyncClient, wait: bool = True) -> None:
         """Close the client in a task that the SDK keeps until it is done, bounded by ``CLOSE_TIMEOUT``, and wait for it.
         No failure of the close comes out of here (see ``_close_with_timeout``).
 
         If the caller is cancelled while it waits, it leaves at once, with its cancellation, and the close goes on in the
         background to its end or its timeout. ``asyncio.wait`` is used, not ``shield``, because it tells the two
         cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
-        ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on."""
+        ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on. A caller that
+        is leaving because it was cancelled does not wait at all (``wait=False``): the close goes on in the background."""
         if not _on_asyncio():
             await _close_plainly(client)
             return
@@ -479,7 +480,8 @@ class AsyncHttpClient:
         task = asyncio.ensure_future(_close_with_timeout(client, self._closing, attempt))
         _keep(task, self._closing)
         task.add_done_callback(functools.partial(_log_cancelled_close, attempt))
-        await asyncio.wait({task})
+        if wait:
+            await asyncio.wait({task})
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""
@@ -615,14 +617,18 @@ class AsyncHttpClient:
         client = self._new_client() if owned else self._client
         if not owned:
             self._in_flight += 1  # the last `async with` that exits meanwhile must not close the client under this call
+        cancelled = False
         try:
             return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
+        except asyncio.CancelledError:
+            cancelled = True  # the caller is leaving: it must not wait for the close, up to CLOSE_TIMEOUT, on top of that
+            raise
         finally:
             if owned:
-                await self._close(client)
+                await self._close(client, wait=not cancelled)
             else:
                 self._in_flight -= 1
-                await self._close_if_unused()
+                await self._close_if_unused(wait=not cancelled)
 
     async def _attempts(
         self,
@@ -640,7 +646,9 @@ class AsyncHttpClient:
             for attempt in range(1, max_attempts + 1):
                 is_last = attempt == max_attempts
                 try:
-                    response = await self._send(client, method, url, json_body, request_headers, params)
+                    response = await client.request(
+                        method=method, url=url, content=json_body, headers=request_headers, params=params
+                    )
                 except (httpx.RequestError, OSError, *_CUT_STREAM_ERRORS) as e:
                     if is_last or not _is_retryable_error(e):
                         raise HttpClientError(f"Request failed: {_describe_network_error(e)}{_after_attempts(attempt)}") from e
@@ -659,19 +667,7 @@ class AsyncHttpClient:
         except HttpClientError:
             raise
         except Exception as e:
-            raise HttpRequestError(_with_detail("Unexpected error during request", _describe_network_error(e))) from e
-
-    @staticmethod
-    async def _send(
-        client: httpx.AsyncClient,
-        method: str,
-        url: str,
-        content: Optional[str],
-        headers: Dict[str, str],
-        params: Optional[Dict[str, Any]],
-    ) -> httpx.Response:
-        """Send one HTTP request."""
-        return await client.request(method=method, url=url, content=content, headers=headers, params=params)
+            raise HttpRequestError(f"Unexpected error during request: {_describe_network_error(e)}") from e
 
     @staticmethod
     def _has_idempotency_key(headers: Dict[str, str]) -> bool:

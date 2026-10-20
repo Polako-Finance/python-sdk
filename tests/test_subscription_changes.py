@@ -13,7 +13,7 @@ from polako.sdk import (
     PolakoClient,
 )
 from tests.error_cases import STATUS_ERRORS
-from tests.factories import TEST_HOST, make_credentials
+from tests.factories import make_credentials
 from tests.generators import generate_readable_string
 
 ACTIONS = ["pause", "resume", "cancel"]
@@ -36,7 +36,7 @@ async def test_it_is_a_patch_to_the_subscription_with_the_api_key(gateway, subsc
 
     request = gateway.last
     assert request.method == "PATCH"
-    assert request.url.host == TEST_HOST
+    assert request.url.host == "stg-api.infra.polako-finance.com"  # the real host, not a constant of the SDK
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions/{subscription_id}/{action}"
     assert request.headers["company_api_key"] == credentials.api_key
 

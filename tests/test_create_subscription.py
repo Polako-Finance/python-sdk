@@ -26,7 +26,6 @@ from polako.sdk import (
     UnknownRegistrationFormError,
 )
 from tests.factories import (
-    TEST_HOST,
     make_form_post_response,
     make_hpp_form_response,
     make_idempotency_key,
@@ -54,7 +53,7 @@ async def test_request_goes_to_the_company_subscriptions_endpoint(gateway, subsc
 
     request = gateway.last
     assert request.method == "POST"
-    assert request.url.host == TEST_HOST
+    assert request.url.host == "stg-api.infra.polako-finance.com"  # the real host, not a constant of the SDK
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions"
 
 

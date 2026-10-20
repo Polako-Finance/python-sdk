@@ -19,7 +19,7 @@ from polako.sdk import (
     SubscriptionSummary,
 )
 from tests.error_cases import STATUS_ERRORS
-from tests.factories import TEST_HOST, make_credentials, make_subscription_detail_payload, make_subscription_page_payload
+from tests.factories import make_credentials, make_subscription_detail_payload, make_subscription_page_payload
 from tests.generators import generate_aware_datetime, generate_readable_string, generate_recent_date
 
 
@@ -64,7 +64,7 @@ async def test_it_is_a_get_with_the_api_key_and_nothing_else_signed(gateway, sub
 
     request = gateway.last
     assert request.method == "GET"
-    assert request.url.host == TEST_HOST
+    assert request.url.host == "stg-api.infra.polako-finance.com"  # the real host, not a constant of the SDK
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions{call.path_tail}"
     assert request.headers["company_api_key"] == credentials.api_key
     assert "Idempotency-Key" not in request.headers
