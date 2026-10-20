@@ -228,7 +228,7 @@ _NOT_ATTEMPTED = "Closing the HTTP client was cancelled before it started; no cl
 class _CloseAttempt:
     """Whether ``aclose`` was called: set inside the task that runs it (see ``_run_aclose``), when the body of that
     coroutine runs, not when the task is created. A task that is cancelled before its first step never runs its body, and
-    neither does one that is thrown a cancellation at its first step."""
+    neither does one that is thrown a cancellation at its first step. The cases are listed in the specification."""
 
     started = False
 
@@ -249,7 +249,8 @@ def _log_unfinished(attempt: _CloseAttempt, message_if_aclose_ran: str) -> None:
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
     """Log a close task that was cancelled; whether ``aclose`` was called decides the line (see ``_log_unfinished``).
     This logs only a close task that ended cancelled. A close task that ended normally logs nothing here, though the
-    task that runs ``aclose`` may have been cancelled alone: ``_close_with_timeout`` logs that case, once."""
+    task that runs ``aclose`` may have been cancelled alone: ``_close_with_timeout`` logs that case, once. The cases of
+    a close that was never attempted are listed in the specification."""
     if finished.cancelled():
         _log_unfinished(attempt, "Closing the HTTP client was cancelled before it ended; its connections may stay open")
 
@@ -303,11 +304,11 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     deadline. What happens to the task after that is in ``_AcloseWatch``.
 
     An ``aclose`` that ends cancelled while this function waits for it was cancelled by something else than the SDK, and
-    is logged here (as the foreign cancellation, or, if ``aclose`` never ran a step, as a close that was never
-    attempted), where the answer does not depend on the order in which asyncio steps the two tasks when a shutdown
-    cancels both. A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see
-    ``_close``); the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself
-    reports ``Task was destroyed but it is pending``."""
+    is logged here (as the foreign cancellation, or, if ``aclose`` was never called, as a close that was never
+    attempted; the cases are listed in the specification), where the answer does not depend on the order in which
+    asyncio steps the two tasks when a shutdown cancels both. A close that is cancelled, when the event loop shuts
+    down, is logged by the caller of this function (see ``_close``); the connections may stay open, and with a loop that
+    is closed without cancelling its tasks asyncio itself reports ``Task was destroyed but it is pending``."""
     closing = asyncio.ensure_future(_run_aclose(client, attempt))
     watch = _AcloseWatch(closing, keep)
     try:
