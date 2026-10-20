@@ -226,8 +226,9 @@ _NOT_ATTEMPTED = "Closing the HTTP client was cancelled before it started; no cl
 
 
 class _CloseAttempt:
-    """Whether ``aclose`` actually ran: set inside the task that runs it (see ``_run_aclose``), not when the task is
-    created, because a task that is cancelled before its first step never runs its coroutine."""
+    """Whether ``aclose`` was called: set inside the task that runs it (see ``_run_aclose``), when the body of that
+    coroutine runs, not when the task is created. A task that is cancelled before its first step never runs its body, and
+    neither does one that is thrown a cancellation at its first step."""
 
     started = False
 
@@ -237,20 +238,18 @@ async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None
     await client.aclose()
 
 
-def _log_unfinished(attempt: _CloseAttempt, interrupted_message: str) -> None:
-    """The one place that tells a close that never began from one that was interrupted: if ``aclose`` never ran a step,
-    no close was attempted and the client stays unclosed; otherwise the message of the case is logged. The flag is set
-    where ``aclose`` runs, not where its task is created: do not move it."""
-    logger.warning(interrupted_message if attempt.started else _NOT_ATTEMPTED)
+def _log_unfinished(attempt: _CloseAttempt, message_if_aclose_ran: str) -> None:
+    """The one place that tells a close that never began from one that did: if ``aclose`` was never called, no close
+    was attempted and the client stays unclosed; otherwise the message of the case is logged (an interruption, or a
+    foreign cancellation). The flag is set where ``aclose`` is called, not where its task is created: do not move it.
+    The ways to a close that was never attempted are listed in the specification, not here."""
+    logger.warning(message_if_aclose_ran if attempt.started else _NOT_ATTEMPTED)
 
 
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
-    """Log a close task that was cancelled. Whether ``aclose`` ran decides the line (see ``_log_unfinished``). The ways
-    to no close attempted: the close task cancelled before its first step; the close task and the task that runs
-    ``aclose`` both cancelled after the close task's first step and before ``aclose`` stepped (what ``asyncio.run``
-    does at its end); and the task that runs ``aclose`` cancelled alone before it stepped (``_close_with_timeout``).
-    The close task cancelled alone after its first step is not one of them: the task that runs ``aclose`` was queued
-    first and runs, so that is a close that was interrupted."""
+    """Log a close task that was cancelled; whether ``aclose`` was called decides the line (see ``_log_unfinished``).
+    This logs only a close task that ended cancelled. A close task that ended normally logs nothing here, though the
+    task that runs ``aclose`` may have been cancelled alone: ``_close_with_timeout`` logs that case, once."""
     if finished.cancelled():
         _log_unfinished(attempt, "Closing the HTTP client was cancelled before it ended; its connections may stay open")
 
