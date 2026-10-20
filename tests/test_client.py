@@ -1077,7 +1077,7 @@ async def test_a_failure_of_aclose_that_comes_after_the_sdk_gave_up_is_still_log
 async def test_a_close_task_that_ran_its_first_step_but_whose_aclose_did_not_is_logged_as_never_attempted(
     gateway, tracking, caplog
 ):
-    # What `asyncio.run` does at its end, one turn later than the test below (cancelled before its first step):
+    # What `asyncio.run` does at its end, one turn later than `test_a_close_task_cancelled_before_its_first_step_is_logged`:
     # the close task has begun to wait, the task that runs aclose has been created but has not stepped, and every
     # task is cancelled in one go.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
@@ -1104,6 +1104,8 @@ async def test_a_close_task_that_ran_its_first_step_but_whose_aclose_did_not_is_
 async def test_an_aclose_task_cancelled_before_it_ran_while_the_close_task_is_not_is_logged_as_never_attempted(
     gateway, tracking, caplog, waiting_tasks
 ):
+    # Only the task that runs aclose is cancelled, two turns after `_close`: the close task has stepped and waits, the
+    # aclose task has been created and not stepped, so aclose never runs. The close task itself goes on normally.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     await http.__aenter__()
     client = http._client
@@ -1119,9 +1121,37 @@ async def test_an_aclose_task_cancelled_before_it_ran_while_the_close_task_is_no
         await caller
         await until(lambda: not http._closing)
 
-    assert "was cancelled before it started; no close was attempted" in caplog.text
+    assert caplog.text.count("no close was attempted") == 1  # once, not also from the done-callback
     assert "although the SDK did not cancel it" not in caplog.text  # that line says aclose ran, and it did not
+    assert "was cancelled before it ended" not in caplog.text
     assert tracking.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_a_close_task_cancelled_alone_after_its_first_step_is_logged_as_interrupted(
+    gateway, tracking, caplog, waiting_tasks
+):
+    # Only the close task is cancelled, two turns after `_close`: the task that runs aclose was queued before the close
+    # task wakes, so it runs; the close task then gives up, cancels aclose, and the close counts as interrupted.
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    await http.__aenter__()
+    client = http._client
+    http._client = None  # the exit below would close it; here `_close` is called by hand
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        caller = asyncio.ensure_future(http._close(client))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)  # the close task waits; the aclose task has not stepped
+        assert len(http._closing) == 2 and tracking.closed == 0
+        for task in waiting_tasks:
+            task.cancel()  # only the close task
+        await caller
+        await until(lambda: not http._closing)
+
+    assert caplog.text.count("was cancelled before it ended") == 1
+    assert "no close was attempted" not in caplog.text  # aclose ran: the flag is set where it runs
+    assert tracking.closed == 1
 
 
 @pytest.mark.asyncio

@@ -237,17 +237,22 @@ async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None
     await client.aclose()
 
 
+def _log_unfinished(attempt: _CloseAttempt, interrupted_message: str) -> None:
+    """The one place that tells a close that never began from one that was interrupted: if ``aclose`` never ran a step,
+    no close was attempted and the client stays unclosed; otherwise the message of the case is logged. The flag is set
+    where ``aclose`` runs, not where its task is created: do not move it."""
+    logger.warning(interrupted_message if attempt.started else _NOT_ATTEMPTED)
+
+
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
-    """Log a close task that was cancelled. If ``aclose`` never ran (the task was cancelled before its first step, or after
-    its first step but before the task that runs ``aclose`` had stepped) no close was attempted and the client stays
-    unclosed, which is not the same as a close that was interrupted. The flag is set where ``aclose`` runs, not where
-    its task is created: do not move it to match a reading of this text."""
-    if not finished.cancelled():
-        return
-    if attempt.started:
-        logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
-    else:
-        logger.warning(_NOT_ATTEMPTED)
+    """Log a close task that was cancelled. Whether ``aclose`` ran decides the line (see ``_log_unfinished``). The ways
+    to no close attempted: the close task cancelled before its first step; the close task and the task that runs
+    ``aclose`` both cancelled after the close task's first step and before ``aclose`` stepped (what ``asyncio.run``
+    does at its end); and the task that runs ``aclose`` cancelled alone before it stepped (``_close_with_timeout``).
+    The close task cancelled alone after its first step is not one of them: the task that runs ``aclose`` was queued
+    first and runs, so that is a close that was interrupted."""
+    if finished.cancelled():
+        _log_unfinished(attempt, "Closing the HTTP client was cancelled before it ended; its connections may stay open")
 
 
 class _AcloseWatch:
@@ -299,7 +304,8 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     deadline. What happens to the task after that is in ``_AcloseWatch``.
 
     An ``aclose`` that ends cancelled while this function waits for it was cancelled by something else than the SDK, and
-    is logged here, where the answer does not depend on the order in which asyncio steps the two tasks when a shutdown
+    is logged here (as the foreign cancellation, or, if ``aclose`` never ran a step, as a close that was never
+    attempted), where the answer does not depend on the order in which asyncio steps the two tasks when a shutdown
     cancels both. A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see
     ``_close``); the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself
     reports ``Task was destroyed but it is pending``."""
@@ -318,12 +324,10 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
             CLOSE_TIMEOUT,
         )
     elif closing.cancelled():
-        if attempt.started:
-            logger.warning(
-                "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open"
-            )
-        else:  # the task that runs aclose was cancelled before it ran: aclose was never called
-            logger.warning(_NOT_ATTEMPTED)
+        _log_unfinished(
+            attempt,
+            "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open",
+        )
 
 
 class AsyncHttpClient:
