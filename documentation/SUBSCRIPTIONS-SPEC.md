@@ -175,7 +175,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 
 ### Client lifecycle
 
-- The SDK runs on asyncio only. The client is set up once, before the first attempt: at `async with`, or at the start of a call outside it. A failure to
+- The SDK is checked on asyncio only (retries wait with `asyncio.sleep`, the close uses asyncio tasks; where no asyncio loop runs, the close is a plain `aclose()` whose failure is logged). The client is set up once, before the first attempt: at `async with`, or at the start of a call outside it. A failure to
   set it up is an `HttpClientError` `Client set-up failed: <class>[: <text>]`, never retried, for errors of the environment
   (`OSError`, `ImportError` for a SOCKS proxy without `socksio`, `ValueError` for an unknown proxy scheme,
   `httpx.InvalidURL` for a malformed proxy URL or port). Any other error at set-up is a mistake in the code or a change in

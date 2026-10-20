@@ -81,3 +81,8 @@ def generate_short_timeout() -> float:
 
 
 WAIT_LIMIT_SECONDS = 5  # the longest a test waits for something to happen before it fails instead of hanging
+
+
+def generate_random_int() -> int:
+    """A large integer, for a test that needs a value that is not a string."""
+    return random.randint(10**8, 10**9)

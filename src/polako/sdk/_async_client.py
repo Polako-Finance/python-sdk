@@ -225,6 +225,24 @@ def _keep(task: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
 _NOT_ATTEMPTED = "Closing the HTTP client was cancelled before it started; no close was attempted, the client stays open"
 
 
+def _on_asyncio() -> bool:
+    """Whether an asyncio event loop is running: the machinery of the close is made of asyncio tasks."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+async def _close_plainly(client: httpx.AsyncClient) -> None:
+    """The close where there is no asyncio loop (trio, say): a plain ``aclose()``, without the bound and the tasks. A
+    failure is logged and goes no further, so that it cannot replace the outcome of the call."""
+    try:
+        await client.aclose()
+    except Exception as e:  # noqa: BLE001 - the outcome of the call matters more than a failed close
+        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e), exc_info=e)
+
+
 class _CloseAttempt:
     """Whether ``aclose`` was called: set inside the task that runs it (see ``_run_aclose``), when the body of that
     coroutine runs, not when the task is created. A task that is cancelled before its first step never runs its body, and
@@ -454,6 +472,9 @@ class AsyncHttpClient:
         background to its end or its timeout. ``asyncio.wait`` is used, not ``shield``, because it tells the two
         cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
         ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on."""
+        if not _on_asyncio():
+            await _close_plainly(client)
+            return
         attempt = _CloseAttempt()
         task = asyncio.ensure_future(_close_with_timeout(client, self._closing, attempt))
         _keep(task, self._closing)

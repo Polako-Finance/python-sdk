@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import random
 import ssl
 import sys
 import warnings
@@ -50,6 +49,7 @@ from tests.factories import (
 from tests.generators import (
     WAIT_LIMIT_SECONDS,
     generate_random_host,
+    generate_random_int,
     generate_readable_string,
     generate_short_timeout,
 )
@@ -635,6 +635,31 @@ async def test_tasks_entering_and_leaving_the_same_client_share_one_and_close_it
 
     assert tracking.built == 1
     assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_where_no_asyncio_loop_runs_the_close_is_plain_and_cannot_replace_the_result(
+    client, gateway, tracking, platform, monkeypatch, caplog
+):
+    # Under trio there is no running asyncio loop: the tasks of the close cannot be made.
+    monkeypatch.setattr("polako.sdk._async_client._on_asyncio", lambda: False)
+    tasks_made = []
+
+    async def not_expected(*args, **kwargs):
+        tasks_made.append(args)
+
+    monkeypatch.setattr("polako.sdk._async_client._close_with_timeout", not_expected)
+    response = make_order_status_response()
+    gateway.respond(body=response)
+    text = generate_readable_string(12)
+    tracking.close_error = RuntimeError(text)
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        status = await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert status.status == response["status"]
+    assert tasks_made == [] and tracking.closed == 1  # no task of the close was made: aclose was called directly
+    assert f"Closing the HTTP client failed: RuntimeError: {text}" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1562,7 +1587,7 @@ async def test_an_api_key_with_whitespace_at_the_end_is_refused_without_the_key_
     "make_key",
     [
         lambda: uuid4(),
-        lambda: random.randint(10**8, 10**9),
+        lambda: generate_random_int(),
         lambda: generate_readable_string(8).encode("ascii"),
         lambda: b"",
         lambda: 0,
@@ -1609,7 +1634,7 @@ async def test_a_uuid_is_accepted_as_the_idempotency_key_and_sent_as_text(gatewa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "key", [random.randint(10**8, 10**9), generate_readable_string(8).encode("ascii"), [generate_readable_string(4)], "", "  "]
+    "key", [generate_random_int(), generate_readable_string(8).encode("ascii"), [generate_readable_string(4)], "", "  "]
 )
 async def test_an_idempotency_key_that_is_blank_or_not_text_is_an_invalid_header_value(gateway, subscription_client, key):
     with pytest.raises(InvalidHeaderValueError, match="idempotency_key"):
@@ -1627,7 +1652,7 @@ async def test_an_idempotency_key_that_is_blank_or_not_text_is_an_invalid_header
         lambda secret: " " + secret,
         lambda secret: secret + "\u017e",
         lambda secret: secret + "\x00",
-        lambda secret: random.randint(10**8, 10**9),
+        lambda secret: generate_random_int(),
         lambda secret: secret.encode("ascii") + b"\n",
     ],
     ids=["newline", "leading-space", "non-ascii", "control", "int", "bytes"],

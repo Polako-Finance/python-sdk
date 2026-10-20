@@ -94,5 +94,5 @@ Minimal — SDK targets payment-gateway endpoints which are NOT being extracted.
 
 - PyPI: `polako-finance` v0.2.1
 - Python: 3.10+ (CI matrix 3.10-3.13)
-- Dependencies: httpx[http2] >= 0.25, < 1.0; anyio >= 3 (asyncio only)
+- Dependencies: httpx[http2] >= 0.25, < 1.0; anyio >= 3 (its error classes; the SDK is checked on asyncio only)
 - Currencies: RSD | Languages: sr, en, ru

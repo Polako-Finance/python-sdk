@@ -291,7 +291,7 @@ All of them are `HttpRequestError`s, so `except HttpRequestError` still catches 
 `HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and so does an `api_key` that is not a string ("must be a string") or cannot be sent as a header (not printable ASCII, or whitespace at either end: a key read from a file often ends with a newline). An idempotency key that is blank, is neither a string nor a `UUID`, or cannot be sent raises
 `InvalidHeaderValueError` (a kind of `InvalidArgumentError`), and any other invalid argument is an `InvalidArgumentError`, before any request. All three are `ValueError`s, so `except ValueError` still catches them.
 
-The SDK runs on asyncio only: the retries wait with `asyncio.sleep` and the close of a connection uses asyncio tasks, so it does not work under trio or another event loop.
+The retries wait with `asyncio.sleep` and the close of a connection uses asyncio tasks; the SDK is checked on asyncio only. Where no asyncio loop runs (trio, say) the close is a plain `aclose()`, without the bound, and its failure is logged; the retries are not checked there.
 
 The client is set up when a call starts, or at `async with PolakoClient()` if you use it. If `SSL_CERT_FILE` names a file that exists but is unreadable or malformed (from `httpx` 0.28 a missing file fails there too, before 0.28 it is skipped), or a proxy setting in the environment cannot be used (an unknown scheme, a malformed URL or port, a SOCKS proxy without the `socksio` package), that call or that line raises `HttpClientError` (`Client set-up failed: ...`). In the examples `async with` is outside the `try`, so their `except` branches do not see such a failure; put it inside yours if you want it handled.
 
