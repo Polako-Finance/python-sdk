@@ -17,8 +17,6 @@ from polako.sdk import (
 )
 from polako.sdk._async_client import AsyncHttpClient
 from tests.factories import (
-    PROD_HOST,
-    TEST_HOST,
     make_customer_info,
     make_idempotency_key,
     make_init_customer_info,
@@ -60,7 +58,7 @@ async def test_create_order(client, gateway, platform):
     assert session.paymentSessionId == response["paymentSessionId"]
     assert session.paymentPageUrl == response["paymentPageUrl"]
     assert gateway.last.method == "POST"
-    assert gateway.last.url.host == TEST_HOST
+    assert gateway.last.url.host == "stg-api.infra.polako-finance.com"  # the real host, not a constant of the SDK
     assert gateway.last.url.path == "/v1/session/signed"
     body = gateway.last_json()
     assert body["platform_id"] == str(platform.platform_id)
@@ -90,7 +88,7 @@ async def test_production_base_url_by_default(gateway, platform):
     async with PolakoClient() as prod:
         await prod.create_order(make_order_details(), make_customer_info(), platform.platform_id, platform.secret_key)
 
-    assert gateway.last.url.host == PROD_HOST
+    assert gateway.last.url.host == "api.infra.polako-finance.com"  # the real host, not a constant of the SDK
 
 
 @pytest.mark.asyncio
@@ -241,6 +239,7 @@ async def test_a_failure_with_no_text_shows_the_reason_found_deeper_on_the_error
     reason = generate_readable_string(12)
     error = httpx.ConnectError("")
     error.__context__ = ConnectionResetError(reason)
+    error.__suppress_context__ = True  # what `raise ... from None` does
     gateway.fail(error)
 
     async with client:
@@ -275,20 +274,34 @@ async def test_an_unexpected_failure_with_no_text_does_not_borrow_the_text_of_an
     assert exc.value.message == "Unexpected error during request: TypeError"
 
 
+def tls_error(reason: str, text: str) -> ssl.SSLError:
+    """An ssl.SSLError the way OpenSSL raises it: the code is in `reason` and in the text."""
+    error = ssl.SSLError(f"[SSL: {reason}] {text}")
+    error.reason = reason  # type: ignore[attr-defined]
+    return error
+
+
 TRANSIENT_FAILURES = [
     pytest.param(lambda text: ssl.SSLEOFError(text), id="SSLEOFError"),
     pytest.param(lambda text: ssl.SSLZeroReturnError(text), id="SSLZeroReturnError"),
-    pytest.param(lambda text: ssl.SSLError(f"[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] {text}"), id="BAD_RECORD_MAC"),
+    pytest.param(lambda text: ssl.SSLSyscallError(text), id="SSLSyscallError"),
+    pytest.param(lambda text: tls_error("BAD_RECORD_MAC", text), id="BAD_RECORD_MAC"),
+    pytest.param(lambda text: tls_error("DECRYPTION_FAILED", text), id="DECRYPTION_FAILED"),
+    pytest.param(lambda text: tls_error("RECORD_LAYER_FAILURE", text), id="RECORD_LAYER_FAILURE"),
+    pytest.param(lambda text: tls_error("UNEXPECTED_RECORD", text), id="UNEXPECTED_RECORD"),
     pytest.param(lambda text: ConnectionResetError(text), id="ConnectionResetError"),
     pytest.param(lambda text: ConnectionAbortedError(text), id="ConnectionAbortedError"),
+    pytest.param(lambda text: ConnectionRefusedError(text), id="ConnectionRefusedError"),
     pytest.param(lambda text: BrokenPipeError(text), id="BrokenPipeError"),
     pytest.param(lambda text: TimeoutError(text), id="TimeoutError"),
 ]
 
 PERMANENT_FAILURES = [
     pytest.param(lambda text: ssl.SSLCertVerificationError(text), id="SSLCertVerificationError"),
-    pytest.param(lambda text: ssl.SSLError(f"[SSL: WRONG_VERSION_NUMBER] {text}"), id="WRONG_VERSION_NUMBER"),
-    pytest.param(lambda text: ssl.SSLError(f"[SSL: TLSV1_ALERT_PROTOCOL_VERSION] {text}"), id="TLSV1_ALERT_PROTOCOL_VERSION"),
+    pytest.param(lambda text: tls_error("CERTIFICATE_VERIFY_FAILED", text), id="CERTIFICATE_VERIFY_FAILED"),
+    pytest.param(lambda text: tls_error("WRONG_VERSION_NUMBER", text), id="WRONG_VERSION_NUMBER"),
+    pytest.param(lambda text: tls_error("TLSV1_ALERT_PROTOCOL_VERSION", text), id="TLSV1_ALERT_PROTOCOL_VERSION"),
+    pytest.param(lambda text: tls_error("UNSUPPORTED_PROTOCOL", text), id="UNSUPPORTED_PROTOCOL"),
     pytest.param(lambda text: FileNotFoundError(text), id="FileNotFoundError"),
     pytest.param(lambda text: PermissionError(text), id="PermissionError"),
 ]
@@ -319,7 +332,12 @@ async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gatewa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "make_error", TRANSIENT_FAILURES + [pytest.param(wrapped_by_httpx(TRANSIENT_FAILURES[0].values[0]), id="wrapped")]
+    "make_error",
+    TRANSIENT_FAILURES
+    + [
+        pytest.param(wrapped_by_httpx(lambda text: tls_error("RECORD_LAYER_FAILURE", text)), id="wrapped-RECORD_LAYER_FAILURE"),
+        pytest.param(wrapped_by_httpx(lambda text: ssl.SSLSyscallError(text)), id="wrapped-SSLSyscallError"),
+    ],
 )
 async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway, sleeps, make_error):
     gateway.sequence(make_error(generate_readable_string(12)), {"status": 200, "body": {}})
@@ -333,7 +351,11 @@ async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway,
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "make_error",
-    PERMANENT_FAILURES + [pytest.param(wrapped_by_httpx(PERMANENT_FAILURES[0].values[0]), id="wrapped-certificate")],
+    PERMANENT_FAILURES
+    + [
+        pytest.param(wrapped_by_httpx(lambda text: ssl.SSLCertVerificationError(text)), id="wrapped-certificate"),
+        pytest.param(wrapped_by_httpx(lambda text: tls_error("WRONG_VERSION_NUMBER", text)), id="wrapped-WRONG_VERSION_NUMBER"),
+    ],
 )
 async def test_a_permanent_failure_is_not_retried_even_when_the_request_is_keyed(gateway, sleeps, make_error):
     gateway.fail(make_error(generate_readable_string(12)))
@@ -396,6 +418,67 @@ async def test_an_error_answer_with_an_empty_body_does_not_end_after_the_colon(c
 
 
 @pytest.mark.asyncio
+async def test_an_error_the_caller_is_handling_is_not_taken_for_the_reason_of_a_new_failure(gateway, sleeps):
+    # A merchant retries inside `except`: the old error is the __context__ of whatever the new call raises.
+    gateway.sequence(httpx.ReadTimeout(""), {"status": 200, "body": {}})
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        try:
+            raise ssl.SSLCertVerificationError(generate_readable_string(12))
+        except ssl.SSLCertVerificationError:
+            await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert len(gateway.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_message_does_not_show_the_text_of_an_error_the_caller_is_handling(gateway, sleeps):
+    old_text = generate_readable_string(12)
+    gateway.fail(httpx.ReadTimeout(""))
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        try:
+            raise ConnectionResetError(old_text)
+        except ConnectionResetError:
+            with pytest.raises(HttpClientError) as exc:
+                await http.get(any_path())
+
+    assert exc.value.message == "Request failed: ReadTimeout"
+
+
+@pytest.mark.asyncio
+async def test_the_walk_over_the_chain_stops_at_an_error_of_the_sdk(gateway, sleeps):
+    error = httpx.ReadTimeout("")
+    error.__cause__ = HttpClientError(generate_readable_string(8))
+    error.__cause__.__cause__ = ssl.SSLCertVerificationError(generate_readable_string(12))
+    gateway.sequence(error, {"status": 200, "body": {}})
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert len(gateway.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_set_up_the_client_in_async_with_is_a_client_error(monkeypatch):
+    # e.g. SSL_CERT_FILE points to a file that is missing
+    error = FileNotFoundError(generate_readable_string(12))
+
+    def broken(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(httpx, "AsyncClient", broken)
+
+    with pytest.raises(HttpClientError) as exc:
+        async with PolakoClient():
+            pass
+
+    assert not isinstance(exc.value, HttpRequestError)
+    assert exc.value.message == f"Client set-up failed: FileNotFoundError: {error}"
+    assert exc.value.__cause__ is error
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("suffix", ["\n", " ", "\t", "\r\n"])
 async def test_an_api_key_with_whitespace_at_the_end_is_refused_without_the_key_in_the_error(gateway, credentials, suffix):
     key = credentials.api_key + suffix
@@ -413,7 +496,15 @@ async def test_an_api_key_with_whitespace_at_the_end_is_refused_without_the_key_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "make_key", [lambda: uuid4(), lambda: random.randint(10**8, 10**9), lambda: generate_readable_string(8).encode("ascii")]
+    "make_key",
+    [
+        lambda: uuid4(),
+        lambda: random.randint(10**8, 10**9),
+        lambda: generate_readable_string(8).encode("ascii"),
+        lambda: b"",
+        lambda: 0,
+    ],
+    ids=["uuid", "int", "bytes", "empty-bytes", "zero"],
 )
 async def test_an_api_key_of_another_type_is_refused_with_a_message_about_the_type(gateway, credentials, make_key):
     key = make_key()

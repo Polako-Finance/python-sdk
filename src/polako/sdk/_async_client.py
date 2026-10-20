@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import ssl
-from typing import Any, Dict, Literal, Optional, Type, TypeVar, Union
+from typing import Any, Dict, Iterator, Literal, Optional, Type, TypeVar, Union
 
 import httpx
 
@@ -43,18 +43,27 @@ def _with_detail(prefix: str, detail: str) -> str:
     return f"{prefix}: {detail}" if detail else prefix
 
 
-def _os_error_text(error: BaseException) -> str:
-    """The class and text of the innermost ``OSError`` with a text on the ``__cause__``/``__context__`` chain.
-    httpcore re-raises a cut TLS handshake or a reset connection ``from None``, so the readable reason survives
-    only as the suppressed context."""
-    found = ""
+def _error_chain(error: BaseException) -> Iterator[BaseException]:
+    """The error and what it was raised because of: its ``__cause__``, or its ``__context__`` when ``raise ... from
+    None`` suppressed it (httpcore re-raises a cut handshake or a reset connection that way, so the readable reason
+    survives only there). A context that was not suppressed is whatever the caller happened to be handling, which
+    has nothing to do with this failure, so it is not followed; neither is anything past an error of the SDK."""
     seen = set()
     current: Optional[BaseException] = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, OSError) and str(current).strip():
-            found = _with_detail(type(current).__name__, str(current))
-        current = current.__cause__ or current.__context__
+        yield current
+        if isinstance(current, HttpClientError):
+            return
+        current = current.__cause__ or (current.__context__ if current.__suppress_context__ else None)
+
+
+def _os_error_text(error: BaseException) -> str:
+    """The class and text of the innermost ``OSError`` with a text on the chain of the error."""
+    found = ""
+    for link in _error_chain(error):
+        if isinstance(link, OSError) and str(link).strip():
+            found = _with_detail(type(link).__name__, str(link))
     return found
 
 
@@ -119,33 +128,42 @@ def _after_attempts(attempt: int) -> str:
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 # What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
-# aborted, refused or broken, a timeout of the system, a TLS connection that was cut.
-_TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError, ssl.SSLEOFError, ssl.SSLZeroReturnError)
-# TLS errors that a repeat cures although they have no class of their own.
-_TRANSIENT_TLS_REASONS = ("BAD_RECORD_MAC", "DECRYPTION_FAILED")
+# aborted, refused or broken, a timeout of the system, and a TLS failure other than the permanent ones below.
+_TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError, ssl.SSLError)
+# The TLS failures that a repeat cannot cure: the protocol version does not match, the certificate is not accepted.
+# The ``reason`` attribute of ``ssl.SSLError`` holds the code of OpenSSL; its text is not matched.
+_PERMANENT_TLS_REASONS = frozenset(
+    {
+        "WRONG_VERSION_NUMBER",
+        "UNSUPPORTED_PROTOCOL",
+        "TLSV1_ALERT_PROTOCOL_VERSION",
+        "NO_PROTOCOLS_AVAILABLE",
+        "UNKNOWN_PROTOCOL",
+        "WRONG_SSL_VERSION",
+        "VERSION_TOO_LOW",
+        "CERTIFICATE_VERIFY_FAILED",
+        "TLSV1_ALERT_UNKNOWN_CA",
+        "SSLV3_ALERT_BAD_CERTIFICATE",
+    }
+)
 
 
-def _is_transient_os_error(error: BaseException) -> bool:
-    if isinstance(error, _TRANSIENT_OS_ERRORS):
+def _is_permanent_tls_error(error: BaseException) -> bool:
+    if isinstance(error, ssl.SSLCertVerificationError):
         return True
-    return isinstance(error, ssl.SSLError) and any(reason in str(error) for reason in _TRANSIENT_TLS_REASONS)
+    return isinstance(error, ssl.SSLError) and getattr(error, "reason", None) in _PERMANENT_TLS_REASONS
 
 
 def _is_retryable_error(error: BaseException) -> bool:
     """Whether a repeat can cure the failure. A repeat of a failure that is permanent gives the same result and spends
     the rate limit, so these are not retried: a certificate that does not verify, a wrong protocol version, a failure
-    to set up the client (an unreadable certificate file). A TLS error found on the chain of the error decides too,
-    because httpx wraps it."""
-    seen = set()
-    current: Optional[BaseException] = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ssl.SSLError) and not _is_transient_os_error(current):
-            return False
-        current = current.__cause__ or current.__context__
+    to set up the client (an unreadable certificate file). A TLS error on the chain of the error decides too, because
+    httpx wraps it."""
+    if any(_is_permanent_tls_error(link) for link in _error_chain(error)):
+        return False
     if isinstance(error, RETRYABLE_ERRORS):
         return True
-    return isinstance(error, OSError) and _is_transient_os_error(error)
+    return isinstance(error, _TRANSIENT_OS_ERRORS)
 
 
 class AsyncHttpClient:
@@ -161,7 +179,9 @@ class AsyncHttpClient:
     connection that was reset, aborted, refused or broken, a timeout of the system, a cut TLS connection), with the same key
     and body, up to ``max_attempts`` attempts in total. A status such as 501 or 505, an unsupported address, too many
     redirects, a certificate that does not verify, a wrong TLS protocol version and a failure to set up the client (an
-    unreadable certificate file) are not cured by a repeat and are raised at once. Every other request is sent exactly once.
+    unreadable certificate file) are not cured by a repeat and are raised at once. A TLS failure is told apart by the
+    ``reason`` code of the error, not by its text; one that is not known to be permanent is retried. Every other request is
+    sent exactly once.
     A failure is an ``HttpClientError`` whose message names the failure and, after a retry, the number of attempts.
     """
 
@@ -202,7 +222,10 @@ class AsyncHttpClient:
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """Enter async context manager."""
-        self._client = httpx.AsyncClient(timeout=self.timeout)
+        try:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        except OSError as e:  # e.g. SSL_CERT_FILE points to a file that is missing or unreadable
+            raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:

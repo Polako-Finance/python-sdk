@@ -423,11 +423,11 @@ class AsyncPolakoClient:
         """The header that identifies the platform on subscription calls; the client must be configured for them."""
         if self._company_id is None:
             raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
+        # The key itself is never put in a message: it would reach logs and tracebacks.
+        if self._api_key is not None and not isinstance(self._api_key, str):
+            raise ConfigurationError(f"'api_key' must be a string, got {type(self._api_key).__name__}")
         if not self._api_key:
             raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
-        # The key itself is never put in a message: it would reach logs and tracebacks.
-        if not isinstance(self._api_key, str):
-            raise ConfigurationError(f"'api_key' must be a string, got {type(self._api_key).__name__}")
         if not is_sendable_header_value(self._api_key):
             raise ConfigurationError(
                 "'api_key' must be printable ASCII without leading or trailing whitespace "
