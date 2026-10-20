@@ -1074,7 +1074,7 @@ async def test_a_failure_of_aclose_that_comes_after_the_sdk_gave_up_is_still_log
 
 
 @pytest.mark.asyncio
-async def test_a_close_task_that_ran_its_first_step_but_whose_aclose_did_not_is_logged_as_never_attempted(
+async def test_a_close_task_whose_first_step_was_taken_but_whose_aclose_was_not_called_is_logged_as_never_attempted(
     gateway, tracking, caplog
 ):
     # What `asyncio.run` does at its end, one turn later than `test_a_close_task_cancelled_before_its_first_step_is_logged`:
@@ -1097,15 +1097,15 @@ async def test_a_close_task_that_ran_its_first_step_but_whose_aclose_did_not_is_
 
     assert "was cancelled before it started; no close was attempted" in caplog.text
     assert "was cancelled before it ended" not in caplog.text
-    assert tracking.closed == 0  # aclose never ran
+    assert tracking.closed == 0  # aclose was never called
 
 
 @pytest.mark.asyncio
-async def test_an_aclose_task_cancelled_before_it_ran_while_the_close_task_is_not_is_logged_as_never_attempted(
+async def test_an_aclose_task_cancelled_before_aclose_was_called_while_the_close_task_is_not_is_logged_as_never_attempted(
     gateway, tracking, caplog, waiting_tasks
 ):
     # Only the task that runs aclose is cancelled, two turns after `_close`: the close task has stepped and waits, the
-    # aclose task has been created and not stepped, so aclose never runs. The close task itself goes on normally.
+    # aclose task has been created and not stepped, so aclose is never called. The close task itself goes on normally.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     await http.__aenter__()
     client = http._client
@@ -1170,7 +1170,7 @@ async def test_a_close_task_cancelled_before_its_first_step_is_logged(gateway, t
 
     assert "was cancelled before it started; no close was attempted" in caplog.text
     assert "was cancelled before it ended" not in caplog.text  # it did not start, so it was not interrupted either
-    assert tracking.closed == 0  # aclose never ran: the log is the only trace
+    assert tracking.closed == 0  # aclose was never called: the log is the only trace
 
 
 @pytest.mark.asyncio

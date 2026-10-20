@@ -230,11 +230,11 @@ class _CloseAttempt:
     coroutine runs, not when the task is created. A task that is cancelled before its first step never runs its body, and
     neither does one that is thrown a cancellation at its first step. The cases are listed in the specification."""
 
-    started = False
+    called = False
 
 
 async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None:
-    attempt.started = True
+    attempt.called = True
     await client.aclose()
 
 
@@ -243,7 +243,7 @@ def _log_unfinished(attempt: _CloseAttempt, message_if_aclose_called: str) -> No
     was attempted and the client stays unclosed; otherwise the message of the case is logged (an interruption, or a
     foreign cancellation). The flag is set where ``aclose`` is called, not where its task is created: do not move it.
     The ways to a close that was never attempted are listed in the specification, not here."""
-    logger.warning(message_if_aclose_called if attempt.started else _NOT_ATTEMPTED)
+    logger.warning(message_if_aclose_called if attempt.called else _NOT_ATTEMPTED)
 
 
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
