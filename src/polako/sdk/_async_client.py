@@ -66,9 +66,17 @@ def _describe_network_error(error: BaseException) -> str:
     return _with_detail(name, text)
 
 
-def is_sendable_header_value(value: str) -> bool:
-    """Printable ASCII without whitespace at either end: anything else is refused by the HTTP layer."""
-    return value.isascii() and value.isprintable() and value == value.strip()
+def is_sendable_header_value(value: Union[str, bytes]) -> bool:
+    """Printable ASCII (a tab inside is allowed) without whitespace at either end: anything else is refused by the
+    HTTP layer. ``bytes`` is judged by its ASCII text; any other type cannot be sent."""
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    if not isinstance(value, str):
+        return False
+    return value.isascii() and all(c.isprintable() or c == "\t" for c in value) and value == value.strip()
 
 
 def _check_header_values(headers: Dict[str, str]) -> None:
@@ -77,14 +85,33 @@ def _check_header_values(headers: Dict[str, str]) -> None:
     for name, value in headers.items():
         if not is_sendable_header_value(value):
             raise InvalidHeaderValueError(
-                f"The value of the {name!r} header cannot be sent: it must be printable ASCII without leading or trailing "
-                "whitespace (a value read from a file often ends with a newline)"
+                f"The value of the {name!r} header cannot be sent: it must be text (or bytes) of printable ASCII without "
+                "leading or trailing whitespace (a value read from a file often ends with a newline)"
             )
+
+
+def _after_attempts(attempt: int) -> str:
+    """Tail of a message that tells how many attempts were made; empty after the first one."""
+    return f" (after {attempt} attempts; the message is about the last one)" if attempt > 1 else ""
+
+
+def _is_retryable_error(error: BaseException) -> bool:
+    """Whether a repeat can cure the failure. A certificate that does not verify will not verify again: a repeat
+    would only spend the rate limit."""
+    seen = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return False
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return isinstance(error, RETRYABLE_ERRORS)
 
 
 # A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
-RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, ssl.SSLError)
+# OSError covers what the transport does not wrap: a reset connection, a broken pipe, a TLS failure (ssl.SSLError).
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, OSError)
 
 
 class AsyncHttpClient:
@@ -199,6 +226,7 @@ class AsyncHttpClient:
         self,
         response: httpx.Response,
         response_model: Optional[Type[T]] = None,
+        attempt: int = 1,
     ) -> Optional[T]:
         """
         Handle HTTP response, raising errors for non-2xx status codes.
@@ -206,6 +234,7 @@ class AsyncHttpClient:
         Args:
             response: httpx Response object
             response_model: Optional Serializable class to deserialize response into
+            attempt: Number of the attempt that got this response; a message after a retry says so
 
         Returns:
             Deserialized response model instance or None if response_model is not provided
@@ -217,6 +246,7 @@ class AsyncHttpClient:
 
         if not response.is_success:
             message = _with_detail(f"HTTP request failed with status {response.status_code}", response_text)
+            message += _after_attempts(attempt)
             error_class = error_class_for_status(response.status_code)
             if error_class is RateLimitedError:
                 raise RateLimitedError(
@@ -275,12 +305,9 @@ class AsyncHttpClient:
                 is_last = attempt == max_attempts
                 try:
                     response = await self._send(method, url, json_body, request_headers, params)
-                except (httpx.RequestError, ssl.SSLError) as e:
-                    if is_last or not isinstance(e, RETRYABLE_ERRORS):
-                        message = _with_detail("Request failed", _describe_network_error(e))
-                        if attempt > 1:
-                            message += f" (after {attempt} attempts; this is the error of the last one)"
-                        raise HttpClientError(message) from e
+                except (httpx.RequestError, OSError) as e:
+                    if is_last or not _is_retryable_error(e):
+                        raise HttpClientError(f"Request failed: {_describe_network_error(e)}{_after_attempts(attempt)}") from e
                     await _sleep(self._backoff(attempt))
                     continue
 
@@ -290,13 +317,13 @@ class AsyncHttpClient:
                         await _sleep(delay)
                         continue
 
-                return self._handle_response(response, response_model)
+                return self._handle_response(response, response_model, attempt)
 
             raise AssertionError("unreachable: the last attempt always returns or raises")
         except HttpClientError:
             raise
         except Exception as e:
-            raise HttpRequestError(f"Unexpected error during request: {e}") from e
+            raise HttpRequestError(_with_detail("Unexpected error during request", _describe_network_error(e))) from e
 
     async def _send(
         self,

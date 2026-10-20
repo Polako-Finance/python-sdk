@@ -17,6 +17,7 @@ from polako.sdk import (
 from polako.sdk._async_client import AsyncHttpClient
 from tests.factories import (
     make_customer_info,
+    make_idempotency_key,
     make_init_customer_info,
     make_order_details,
     make_order_status_response,
@@ -25,9 +26,15 @@ from tests.factories import (
     make_refund_response,
     make_session_details_response,
     make_session_info_response,
+    make_subscribe_args,
+    make_subscribe_response,
     sign,
 )
-from tests.generators import generate_readable_string
+from tests.generators import generate_random_host, generate_readable_string
+
+
+def keyed() -> dict:
+    return {"Idempotency-Key": make_idempotency_key()}
 
 
 @pytest.mark.asyncio
@@ -220,20 +227,22 @@ async def test_works_without_context_manager(client, gateway, platform):
 @pytest.mark.asyncio
 async def test_a_failure_with_no_text_shows_the_reason_found_deeper_on_the_error_chain(client, gateway):
     # httpcore re-raises a cut handshake or a reset connection from None: the readable reason is only the context.
+    reason = generate_readable_string(12)
     error = httpx.ConnectError("")
-    error.__context__ = ConnectionResetError("Connection reset by peer")
+    error.__context__ = ConnectionResetError(reason)
     gateway.fail(error)
 
     async with client:
         with pytest.raises(HttpClientError) as exc:
             await client.get_session_details(uuid4())
 
-    assert exc.value.message == "Request failed: ConnectError: ConnectionResetError: Connection reset by peer"
+    assert exc.value.message == f"Request failed: ConnectError: ConnectionResetError: {reason}"
 
 
 @pytest.mark.asyncio
-async def test_a_failure_that_httpx_does_not_wrap_is_still_a_client_error_not_a_gateway_answer(client, gateway):
-    error = ssl.SSLError("[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] decryption failed")
+@pytest.mark.parametrize("error_class", [ssl.SSLError, ConnectionResetError, BrokenPipeError])
+async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gateway_answer(client, gateway, error_class):
+    error = error_class(generate_readable_string(12))
     gateway.fail(error)
 
     async with client:
@@ -245,24 +254,76 @@ async def test_a_failure_that_httpx_does_not_wrap_is_still_a_client_error_not_a_
 
 
 @pytest.mark.asyncio
-async def test_a_tls_failure_after_the_handshake_is_retried_when_the_request_is_keyed(gateway, sleeps):
-    gateway.sequence(ssl.SSLError("[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC]"), {"status": 200, "body": {}})
+@pytest.mark.parametrize("error_class", [ssl.SSLError, ConnectionResetError, BrokenPipeError])
+async def test_a_failure_that_httpx_does_not_wrap_is_retried_when_the_request_is_keyed(gateway, sleeps, error_class):
+    gateway.sequence(error_class(generate_readable_string(12)), {"status": 200, "body": {}})
 
-    async with AsyncHttpClient("https://example.test") as http:
-        await http.post("/v1/anything", request_body={"a": 1}, headers={"Idempotency-Key": "k-1"})
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        await http.post("/v1/anything", request_body={"a": 1}, headers=keyed())
 
     assert len(gateway.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_that_does_not_verify_is_not_retried(gateway, sleeps):
+    gateway.fail(ssl.SSLCertVerificationError(generate_readable_string(12)))
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        with pytest.raises(HttpClientError):
+            await http.post("/v1/anything", request_body={"a": 1}, headers=keyed())
+
+    assert len(gateway.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_failure_that_httpx_wrapped_is_not_retried_either(gateway, sleeps):
+    error = httpx.ConnectError("")
+    error.__cause__ = ssl.SSLCertVerificationError(generate_readable_string(12))
+    gateway.fail(error)
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        with pytest.raises(HttpClientError):
+            await http.post("/v1/anything", request_body={"a": 1}, headers=keyed())
+
+    assert len(gateway.requests) == 1
 
 
 @pytest.mark.asyncio
 async def test_the_message_of_a_retried_request_says_how_many_attempts_were_made(gateway, sleeps):
     gateway.fail(httpx.ReadTimeout(""))
 
-    async with AsyncHttpClient("https://example.test", max_attempts=3) as http:
+    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=3) as http:
         with pytest.raises(HttpClientError) as exc:
-            await http.post("/v1/anything", request_body={"a": 1}, headers={"Idempotency-Key": "k-1"})
+            await http.post("/v1/anything", request_body={"a": 1}, headers=keyed())
 
-    assert exc.value.message == "Request failed: ReadTimeout (after 3 attempts; this is the error of the last one)"
+    assert exc.value.message == "Request failed: ReadTimeout (after 3 attempts; the message is about the last one)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 503])
+async def test_the_message_of_an_answer_after_retries_says_how_many_attempts_were_made(gateway, sleeps, status):
+    detail = generate_readable_string(12)
+    gateway.respond(status=status, text=detail)
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=3) as http:
+        with pytest.raises(HttpRequestError) as exc:
+            await http.post("/v1/anything", request_body={"a": 1}, headers=keyed())
+
+    assert exc.value.message == (
+        f"HTTP request failed with status {status}: {detail} (after 3 attempts; the message is about the last one)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_message_of_an_answer_to_a_single_attempt_has_no_attempt_count(client, gateway):
+    detail = generate_readable_string(12)
+    gateway.respond(status=404, text=detail)
+
+    async with client:
+        with pytest.raises(HttpRequestError) as exc:
+            await client.get_session_details(uuid4())
+
+    assert exc.value.message == f"HTTP request failed with status 404: {detail}"
 
 
 @pytest.mark.asyncio
@@ -294,40 +355,70 @@ async def test_an_api_key_with_whitespace_at_the_end_is_refused_without_the_key_
 
 @pytest.mark.asyncio
 async def test_a_non_ascii_idempotency_key_is_refused_before_any_request(gateway, subscription_client):
+    key = generate_readable_string(6) + "\u017e"
+
     with pytest.raises(InvalidHeaderValueError, match="idempotency_key"):
         async with subscription_client:
-            await subscription_client.create_subscription(
-                customer_email="a@example.com",
-                amount=10,
-                currency="RSD",
-                billing_interval="monthly",
-                merchant_subscription_ref="ref-1",
-                success_url="https://example.com/ok",
-                cancel_url="https://example.com/cancel",
-                error_url="https://example.com/error",
-                idempotency_key="porud\u017ebina-17",
-            )
+            await subscription_client.create_subscription(**make_subscribe_args(), idempotency_key=key)
 
     assert gateway.requests == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["secret\n", " secret", "se\u017eret", "se\x00cret"])
-async def test_a_header_value_that_cannot_be_sent_is_refused_naming_only_the_header(gateway, value):
-    async with AsyncHttpClient("https://example.test") as http:
-        with pytest.raises(InvalidHeaderValueError) as exc:
-            await http.get("/v1/anything", headers={"x-token": value})
+async def test_a_uuid_is_accepted_as_the_idempotency_key_and_sent_as_text(gateway, subscription_client):
+    key = uuid4()
+    gateway.respond(status=201, body=make_subscribe_response())
 
-    assert "x-token" in str(exc.value)
-    assert value.strip() not in str(exc.value)
+    async with subscription_client:
+        created = await subscription_client.create_subscription(**make_subscribe_args(), idempotency_key=key)
+
+    assert created.idempotency_key == str(key)
+    assert gateway.last.headers["Idempotency-Key"] == str(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", [12345, b"bytes", ["a"]])
+async def test_an_idempotency_key_of_another_type_is_an_invalid_argument(gateway, subscription_client, key):
+    with pytest.raises(InvalidArgumentError, match="idempotency_key"):
+        async with subscription_client:
+            await subscription_client.create_subscription(**make_subscribe_args(), idempotency_key=key)
+
     assert gateway.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["secret\n", " secret", "se\u017eret", "se\x00cret", 12345, None])
+async def test_a_header_value_that_cannot_be_sent_is_refused_naming_only_the_header(gateway, value):
+    name = generate_readable_string(8)
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        with pytest.raises(InvalidHeaderValueError) as exc:
+            await http.get("/v1/anything", headers={name: value})
+
+    assert name in str(exc.value)
+    assert "secret" not in str(exc.value)
+    assert gateway.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value", [generate_readable_string(6).encode("ascii"), generate_readable_string(3) + "\t" + generate_readable_string(3)]
+)
+async def test_a_header_value_httpx_can_send_is_sent(gateway, value):
+    name = generate_readable_string(8)
+    gateway.respond(body={})
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        await http.get("/v1/anything", headers={name: value})
+
+    assert len(gateway.requests) == 1
 
 
 @pytest.mark.asyncio
 async def test_invalid_arguments_are_typed_and_still_value_errors(client, gateway, platform):
     async with client:
         with pytest.raises(InvalidArgumentError) as exc:
-            await client.refund_session(uuid4(), platform.platform_id, platform.secret_key, "no")
+            await client.refund_session(uuid4(), platform.platform_id, platform.secret_key, generate_readable_string(2))
 
     assert isinstance(exc.value, ValueError)
     assert not isinstance(exc.value, ConfigurationError)

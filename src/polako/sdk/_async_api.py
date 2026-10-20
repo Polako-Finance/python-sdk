@@ -325,7 +325,7 @@ class AsyncPolakoClient:
         success_url: str,
         cancel_url: str,
         error_url: str,
-        idempotency_key: Optional[str] = None,
+        idempotency_key: Optional[Union[str, UUID]] = None,
     ) -> SubscriptionCreated:
         """
         Create a subscription and get the form that sends the customer through the card registration (3DS).
@@ -351,7 +351,7 @@ class AsyncPolakoClient:
             success_url: Where the customer returns after a successful registration
             cancel_url: Where the customer returns after cancelling
             error_url: URL that receives a POST when the registration fails
-            idempotency_key: Optional key that makes the call safe to repeat
+            idempotency_key: Optional key that makes the call safe to repeat: a UUID or a string
 
         Returns:
             SubscriptionCreated with the subscription ID, the registration form and the idempotency key used
@@ -378,7 +378,13 @@ class AsyncPolakoClient:
                 f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}"
             ) from None
 
+        if isinstance(idempotency_key, UUID):
+            idempotency_key = str(idempotency_key)
         if idempotency_key is not None:
+            if not isinstance(idempotency_key, str):
+                raise InvalidArgumentError(
+                    f"'idempotency_key' must be a UUID or a string, got {type(idempotency_key).__name__}"
+                )
             if not idempotency_key.strip():
                 raise InvalidArgumentError("'idempotency_key' must not be empty")
             if not is_sendable_header_value(idempotency_key):
