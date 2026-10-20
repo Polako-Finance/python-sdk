@@ -5,9 +5,9 @@ from decimal import Decimal
 from typing import Dict, Iterable, List, Optional, TypeVar, Union
 from uuid import UUID, uuid4
 
-from polako.sdk._async_client import AsyncHttpClient
+from polako.sdk._async_client import AsyncHttpClient, is_sendable_header_value
 from polako.sdk._constants import BillingInterval, SubscriptionStatus
-from polako.sdk._exceptions import ConfigurationError
+from polako.sdk._exceptions import ConfigurationError, InvalidArgumentError, InvalidHeaderValueError
 from polako.sdk._order import (
     CheckStatusRequest,
     CreateOrderRequest,
@@ -107,7 +107,7 @@ class AsyncPolakoClient:
             SessionInfo containing payment session details
 
         Raises:
-            ValueError: If validation of order or customer fails
+            InvalidArgumentError: If validation of order or customer fails
             HttpRequestError: If the API request fails
             HttpClientError: If there's a network error
         """
@@ -197,7 +197,7 @@ class AsyncPolakoClient:
             PaymentUrlResult containing the payment URL and gateway metadata
 
         Raises:
-            ValueError: If validation of customer info fails
+            InvalidArgumentError: If validation of customer info fails
             HttpRequestError: If the API request fails
             HttpClientError: If there's a network error
         """
@@ -243,16 +243,16 @@ class AsyncPolakoClient:
             RefundResponse containing refund transaction details
 
         Raises:
-            ValueError: If reason is too short/long or refund_items is empty
+            InvalidArgumentError: If reason is too short/long or refund_items is empty
             HttpRequestError: If the API request fails
             HttpClientError: If there's a network error
         """
         if not reason or len(reason) < 3:
-            raise ValueError("'reason' must be at least 3 characters")
+            raise InvalidArgumentError("'reason' must be at least 3 characters")
         if len(reason) > 255:
-            raise ValueError("'reason' must be at most 255 characters")
+            raise InvalidArgumentError("'reason' must be at most 255 characters")
         if refund_items is not None and len(refund_items) == 0:
-            raise ValueError("'refund_items' must not be empty; pass None for a full refund")
+            raise InvalidArgumentError("'refund_items' must not be empty; pass None for a full refund")
 
         is_full_refund = refund_items is None
 
@@ -358,7 +358,8 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``amount`` is not greater than zero
+            InvalidArgumentError: Input validation errors, e.g. ``amount`` is not greater than zero
+            InvalidHeaderValueError: If ``idempotency_key`` is not printable ASCII or has whitespace at either end
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
@@ -373,10 +374,17 @@ class AsyncPolakoClient:
             interval = BillingInterval(billing_interval)
         except ValueError:
             allowed = ", ".join(i.value for i in BillingInterval)
-            raise ValueError(f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}") from None
+            raise InvalidArgumentError(
+                f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}"
+            ) from None
 
-        if idempotency_key is not None and not idempotency_key.strip():
-            raise ValueError("'idempotency_key' must not be empty")
+        if idempotency_key is not None:
+            if not idempotency_key.strip():
+                raise InvalidArgumentError("'idempotency_key' must not be empty")
+            if not is_sendable_header_value(idempotency_key):
+                raise InvalidHeaderValueError(
+                    "'idempotency_key' must be printable ASCII without leading or trailing whitespace"
+                )
 
         request = SubscribeRequest(
             customer_email=customer_email,
@@ -410,6 +418,12 @@ class AsyncPolakoClient:
             raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
         if not self._api_key:
             raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        if not is_sendable_header_value(self._api_key):
+            # The key itself is never put in the message: it would reach logs and tracebacks.
+            raise ConfigurationError(
+                "'api_key' must be printable ASCII without leading or trailing whitespace "
+                "(a key read from a file often ends with a newline: strip it)"
+            )
         return {"company_api_key": self._api_key}
 
     async def get_subscription(self, subscription_id: Union[UUID, str]) -> SubscriptionDetails:
@@ -427,7 +441,7 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
@@ -482,7 +496,7 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``limit`` is not from 1 to 100
+            InvalidArgumentError: Input validation errors, e.g. ``limit`` is not from 1 to 100
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             RateLimitedError: If the rate limit is hit (HTTP 429)
@@ -534,7 +548,7 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
@@ -558,7 +572,7 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
@@ -582,7 +596,7 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)

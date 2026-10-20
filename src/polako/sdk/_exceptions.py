@@ -7,6 +7,16 @@ class ConfigurationError(ValueError):
     """The client is not configured for the requested call (e.g. no company ID or API key for a subscription)."""
 
 
+class InvalidArgumentError(ValueError):
+    """An argument of a call is not valid: a missing or malformed value, a number out of range, a text of the wrong
+    length. Raised before anything is sent. The message names the argument; it never holds a secret."""
+
+
+class InvalidHeaderValueError(InvalidArgumentError):
+    """A value that would be sent as an HTTP header (an idempotency key, say) cannot be sent: it is not printable ASCII,
+    or it has whitespace at either end. The message names the header or the argument, never the value."""
+
+
 class WebhookSignatureError(Exception):
     """The signature of a webhook does not match its body: the request was not sent by the gateway, or was altered."""
 

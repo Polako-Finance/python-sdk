@@ -8,6 +8,7 @@ from uuid import UUID
 
 from polako.sdk._constants import BillingInterval
 from polako.sdk._decoding import StrictModel, read_uuid, wire_field
+from polako.sdk._exceptions import InvalidArgumentError
 from polako.sdk._serializable import Serializable
 
 MERCHANT_REF_MAX_LENGTH = 128
@@ -84,7 +85,7 @@ def parse_registration_form(raw: Dict[str, Any]) -> RegistrationForm:
 def _check_http_url(name: str, value: str) -> None:
     parsed = urlparse(value) if isinstance(value, str) else None
     if parsed is None or parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(f"'{name}' must be a valid http or https URL")
+        raise InvalidArgumentError(f"'{name}' must be a valid http or https URL")
 
 
 def _decimal_places(amount: Decimal) -> int:
@@ -115,29 +116,29 @@ class SubscribeRequest(Serializable):
         Check the fields the server would reject, so the mistake shows up before a request is made.
 
         Raises:
-            ValueError: If a field is invalid
+            InvalidArgumentError: If a field is invalid
         """
         email = self.customer_email
         if not isinstance(email, str) or "@" not in email or any(ch.isspace() for ch in email):
-            raise ValueError("'customer_email' must be a valid email address")
+            raise InvalidArgumentError("'customer_email' must be a valid email address")
 
         if not isinstance(self.amount, Decimal) or not self.amount.is_finite() or self.amount <= 0:
-            raise ValueError("'amount' must be a finite Decimal greater than zero")
+            raise InvalidArgumentError("'amount' must be a finite Decimal greater than zero")
         if _decimal_places(self.amount) > 2:
-            raise ValueError(
+            raise InvalidArgumentError(
                 f"'amount' must have at most two decimal places, got {self.amount}: the server keeps cents, "
                 "so round the amount to cents yourself first"
             )
 
         if not isinstance(self.currency, str) or not self.currency:
-            raise ValueError("'currency' is required")
+            raise InvalidArgumentError("'currency' is required")
 
         if not isinstance(self.billing_interval, BillingInterval):
-            raise ValueError(f"'billing_interval' must be a BillingInterval, got {self.billing_interval!r}")
+            raise InvalidArgumentError(f"'billing_interval' must be a BillingInterval, got {self.billing_interval!r}")
 
         ref = self.merchant_subscription_ref
         if not isinstance(ref, str) or not 1 <= len(ref) <= MERCHANT_REF_MAX_LENGTH:
-            raise ValueError(f"'merchant_subscription_ref' must be 1 to {MERCHANT_REF_MAX_LENGTH} characters")
+            raise InvalidArgumentError(f"'merchant_subscription_ref' must be 1 to {MERCHANT_REF_MAX_LENGTH} characters")
 
         _check_http_url("success_url", self.success_url)
         _check_http_url("cancel_url", self.cancel_url)

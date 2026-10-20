@@ -2,11 +2,19 @@
 
 import asyncio
 import json
+import ssl
 from typing import Any, Dict, Literal, Optional, Type, TypeVar, Union
 
 import httpx
 
-from polako.sdk._exceptions import HttpClientError, HttpRequestError, RateLimitedError, error_class_for_status
+from polako.sdk._exceptions import (
+    HttpClientError,
+    HttpRequestError,
+    InvalidArgumentError,
+    InvalidHeaderValueError,
+    RateLimitedError,
+    error_class_for_status,
+)
 from polako.sdk._serializable import Serializable
 
 T = TypeVar("T", bound=Serializable)
@@ -28,17 +36,55 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     return seconds if seconds >= 0 else None
 
 
-def _describe_network_error(error: httpx.RequestError) -> str:
+def _with_detail(prefix: str, detail: str) -> str:
+    """``prefix: detail``, or just ``prefix`` when the detail is blank, so a message never ends after a colon."""
+    detail = detail.strip()
+    return f"{prefix}: {detail}" if detail else prefix
+
+
+def _os_error_text(error: BaseException) -> str:
+    """The class and text of the innermost ``OSError`` with a text on the ``__cause__``/``__context__`` chain.
+    httpcore re-raises a cut TLS handshake or a reset connection ``from None``, so the readable reason survives
+    only as the suppressed context."""
+    found = ""
+    seen = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and str(current).strip():
+            found = _with_detail(type(current).__name__, str(current))
+        current = current.__cause__ or current.__context__
+    return found
+
+
+def _describe_network_error(error: BaseException) -> str:
     """The failure's class and text. httpx raises the timeouts and a reset connection with an empty text, so the
-    class name is what says what happened; the original error stays available as ``__cause__``."""
-    text = str(error).strip()
+    class name is what says what happened; when there is no text, the reason found deeper on the error chain is
+    used. The original error stays available as ``__cause__``."""
     name = type(error).__name__
-    return f"{name}: {text}" if text else name
+    text = str(error).strip() or _os_error_text(error)
+    return _with_detail(name, text)
+
+
+def is_sendable_header_value(value: str) -> bool:
+    """Printable ASCII without whitespace at either end: anything else is refused by the HTTP layer."""
+    return value.isascii() and value.isprintable() and value == value.strip()
+
+
+def _check_header_values(headers: Dict[str, str]) -> None:
+    """Refuse a header value that cannot be sent, naming only the header: the value may be a secret and must not
+    appear in an error message, a traceback or ``__cause__``."""
+    for name, value in headers.items():
+        if not is_sendable_header_value(value):
+            raise InvalidHeaderValueError(
+                f"The value of the {name!r} header cannot be sent: it must be printable ASCII without leading or trailing "
+                "whitespace (a value read from a file often ends with a newline)"
+            )
 
 
 # A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
-RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, ssl.SSLError)
 
 
 class AsyncHttpClient:
@@ -126,7 +172,7 @@ class AsyncHttpClient:
         elif isinstance(body, dict):
             return json.dumps(body)
         else:
-            raise ValueError(f"Body must be Serializable instance or dict, got {type(body)}")
+            raise InvalidArgumentError(f"Body must be Serializable instance or dict, got {type(body)}")
 
     def _deserialize_response(self, response_text: str, response_model: Type[T]) -> T:
         """
@@ -170,7 +216,7 @@ class AsyncHttpClient:
         response_text = response.text
 
         if not response.is_success:
-            message = f"HTTP request failed with status {response.status_code}: {response_text}"
+            message = _with_detail(f"HTTP request failed with status {response.status_code}", response_text)
             error_class = error_class_for_status(response.status_code)
             if error_class is RateLimitedError:
                 raise RateLimitedError(
@@ -213,11 +259,14 @@ class AsyncHttpClient:
             Deserialized response model instance or None if response_model is not provided
 
         Raises:
-            HttpRequestError: If the request fails or response cannot be parsed
-            httpx.RequestError: If there's a network error
+            InvalidHeaderValueError: If a header value is not printable ASCII or has whitespace at either end
+            HttpRequestError: If the gateway answers with an error status or the answer cannot be parsed
+            HttpClientError: If the request fails before an answer arrives, e.g. a refused connection or a timeout
+                (the original error is its ``__cause__``)
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
         request_headers = self._build_headers(headers)
+        _check_header_values(request_headers)
         json_body = self._serialize_body(request_body)
         max_attempts = self.max_attempts if self._has_idempotency_key(request_headers) else 1
 
@@ -226,9 +275,12 @@ class AsyncHttpClient:
                 is_last = attempt == max_attempts
                 try:
                     response = await self._send(method, url, json_body, request_headers, params)
-                except httpx.RequestError as e:
+                except (httpx.RequestError, ssl.SSLError) as e:
                     if is_last or not isinstance(e, RETRYABLE_ERRORS):
-                        raise HttpClientError(f"Network error during request: {_describe_network_error(e)}") from e
+                        message = _with_detail("Request failed", _describe_network_error(e))
+                        if attempt > 1:
+                            message += f" (after {attempt} attempts; this is the error of the last one)"
+                        raise HttpClientError(message) from e
                     await _sleep(self._backoff(attempt))
                     continue
 

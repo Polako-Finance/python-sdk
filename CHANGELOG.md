@@ -9,8 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-10-20
 
+### Added
+- `InvalidArgumentError` (a `ValueError`): the class of every argument check of the SDK (an order, a customer, a refund, a subscription, a list query, an ID), raised before anything is sent. Code that catches `ValueError` keeps working; code that needs to tell an invalid argument from another `ValueError` can catch this class.
+- `InvalidHeaderValueError` (an `InvalidArgumentError`): a value that would be sent as a header and cannot be, because it is not printable ASCII or has whitespace at either end. `create_subscription()` raises it for such an `idempotency_key`, and the HTTP client for any header value; the message names the argument or header, never the value.
+
+### Changed
+- The message of an `HttpClientError` raised before an answer arrived now starts with `Request failed:` instead of `Network error during request:`, because not every such failure is a network one (a request that could not be built, an answer that could not be decoded). It names the failure: a timeout or a reset connection comes from `httpx` with an empty text, so the message used to end after the colon; it is now, for example, `Request failed: ReadTimeout`. An error that has a text keeps it after the class name (`Request failed: ConnectError: All connection attempts failed`); with no text, the reason found deeper on the error chain is used. After more than one attempt the message says how many were made. The original error is still `__cause__`.
+- An error answer with an empty body (typical for a proxy or a load balancer) no longer gives a message that ends after the colon: `HTTP request failed with status 502`.
+- `create_subscription()` and the other subscription calls raise `ConfigurationError` for an `api_key` that cannot be sent as a header (typically a trailing newline from a file), without the key in the message.
+
 ### Fixed
-- The message of the `HttpClientError` raised for a network failure now names the failure. A timeout or a reset connection comes from `httpx` with an empty text, so the message used to end after the colon (`Network error during request: `); it is now, for example, `Network error during request: ReadTimeout`. An error that has a text keeps it after the class name (`Network error during request: ConnectError: All connection attempts failed`). The original error is still `__cause__`.
+- The API key could appear in the text and `__cause__` of the exception when it had whitespace at the end; it is now refused before anything is sent.
+- A non-ASCII `idempotency_key` gave an `HttpRequestError` with no status; it is now an `InvalidHeaderValueError`.
+- A TLS error after the handshake (`ssl.SSLError`) was reported as an answer of the gateway and never retried; it is now an `HttpClientError` and is retried for a request with an `Idempotency-Key`.
 
 ## [0.2.0] - 2026-10-12
 

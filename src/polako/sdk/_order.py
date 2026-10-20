@@ -8,6 +8,7 @@ from uuid import UUID
 
 from polako.sdk._constants import CURRENCIES, LANGUAGES, TAX_SCHEMAS, TCurrency, TLanguage, TTaxSchema
 from polako.sdk._decoding import parse_moment
+from polako.sdk._exceptions import InvalidArgumentError
 from polako.sdk._serializable import Serializable
 
 
@@ -37,19 +38,19 @@ class OrderItem(Serializable):
         Validate order item fields.
 
         Raises:
-            ValueError: If any field validation fails
+            InvalidArgumentError: If any field validation fails
         """
         if not self.name:
-            raise ValueError("'name' is required")
+            raise InvalidArgumentError("'name' is required")
 
         if self.price <= 0:
-            raise ValueError("'price' must be positive")
+            raise InvalidArgumentError("'price' must be positive")
 
         if not isinstance(self.quantity, int) or self.quantity <= 0:
-            raise ValueError("'quantity' must be a positive integer")
+            raise InvalidArgumentError("'quantity' must be a positive integer")
 
         if self.tax is not None and self.tax not in TAX_SCHEMAS:
-            raise ValueError(f"invalid 'tax' value '{self.tax}', must be one of {TAX_SCHEMAS}")
+            raise InvalidArgumentError(f"invalid 'tax' value '{self.tax}', must be one of {TAX_SCHEMAS}")
 
 
 @dataclass
@@ -76,19 +77,19 @@ class OrderDetails(Serializable):
         Validate order details and all items.
 
         Raises:
-            ValueError: If any field validation fails
+            InvalidArgumentError: If any field validation fails
         """
         if not self.items or len(self.items) <= 0:
-            raise ValueError("'items' cannot be empty")
+            raise InvalidArgumentError("'items' cannot be empty")
 
         if self.total <= 0:
-            raise ValueError("'total' must be positive")
+            raise InvalidArgumentError("'total' must be positive")
 
         if self.currency is not None and self.currency not in CURRENCIES:
-            raise ValueError(f"invalid 'currency' value '{self.currency}', must be one of {CURRENCIES}")
+            raise InvalidArgumentError(f"invalid 'currency' value '{self.currency}', must be one of {CURRENCIES}")
 
         if self.language is not None and self.language not in LANGUAGES:
-            raise ValueError(f"invalid 'language' value '{self.language}', must be one of {LANGUAGES}")
+            raise InvalidArgumentError(f"invalid 'language' value '{self.language}', must be one of {LANGUAGES}")
 
         for item in self.items:
             item.validate()
@@ -491,16 +492,16 @@ class InitCustomerInfo(Serializable):
         Validate customer info fields.
 
         Raises:
-            ValueError: If any required field is missing
+            InvalidArgumentError: If any required field is missing
         """
         if not self.first_name:
-            raise ValueError("'first_name' is required")
+            raise InvalidArgumentError("'first_name' is required")
         if not self.last_name:
-            raise ValueError("'last_name' is required")
+            raise InvalidArgumentError("'last_name' is required")
         if not self.email:
-            raise ValueError("'email' is required")
+            raise InvalidArgumentError("'email' is required")
         if self.type is not None and self.type not in ("company", "person"):
-            raise ValueError(f"invalid 'type' value '{self.type}', must be 'company' or 'person'")
+            raise InvalidArgumentError(f"invalid 'type' value '{self.type}', must be 'company' or 'person'")
 
 
 @dataclass

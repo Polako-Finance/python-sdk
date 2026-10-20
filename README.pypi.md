@@ -287,8 +287,8 @@ it is `False` for them, because anyone who knows your URL could send such a noti
 | `ServerError` | 5xx | The gateway or the card processor failed |
 
 All of them are `HttpRequestError`s, so `except HttpRequestError` still catches every one. A network error is an
-`HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and an
-invalid argument is a `ValueError` before any request.
+`HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, a key that cannot be sent as a header (not printable ASCII, or whitespace at either end: a key read from a file often ends with a newline) raises
+`ConfigurationError` (the API key) or `InvalidHeaderValueError` (the idempotency key; a kind of `InvalidArgumentError`), and an invalid argument is an `InvalidArgumentError` before any request. All three are `ValueError`s, so `except ValueError` still catches them.
 
 ### Managing a subscription
 
