@@ -215,6 +215,12 @@ def _stacklevel_outside_sdk() -> int:
     return level
 
 
+def _keep(task: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
+    """Hold the task in ``keep`` until it is done: asyncio keeps only weak references to tasks."""
+    keep.add(task)
+    task.add_done_callback(keep.discard)
+
+
 def _log_cancelled_close(finished: "asyncio.Future") -> None:
     """Log a close task that was cancelled, also one that was cancelled before it ran a single step."""
     if finished.cancelled():
@@ -222,40 +228,32 @@ def _log_cancelled_close(finished: "asyncio.Future") -> None:
 
 
 class _AcloseWatch:
-    """What the SDK does about one running ``aclose``: keeps its task, logs how it ended, and, once the SDK has given
+    """What the SDK does about one running ``aclose``: keeps its task, logs a failure of it, and, once the SDK has given
     up waiting, holds it for a while more.
 
-    The task is kept in ``keep`` while it runs, because asyncio keeps only weak references to tasks and an ``aclose``
-    that survives a cancellation could be collected in the middle. When the SDK gives up (the deadline, or the
-    cancellation of the task that waits) it cancels ``aclose`` and holds the task for ``CLOSE_HOLD`` seconds more, by a
-    timer that is cancelled as soon as ``aclose`` ends. If ``aclose`` is still running then, the SDK logs that and stops
-    holding it; it is not held for the life of the client, so asyncio may then report it as destroyed while pending."""
+    The task is kept in ``keep`` while it runs (see ``_keep``), because an ``aclose`` that survives a cancellation could
+    otherwise be collected in the middle. When the SDK gives up (the deadline, or the cancellation of the task that
+    waits) it cancels ``aclose`` and holds the task for ``CLOSE_HOLD`` seconds more, by a timer that is cancelled as soon
+    as ``aclose`` ends. If ``aclose`` is still running then, the SDK logs that and stops holding it; it is not held for
+    the life of the client, so asyncio may then report it as destroyed while pending."""
 
     def __init__(self, closing: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
         self.closing = closing
         self.keep = keep
-        self.gave_up = False
         self.hold: Optional[asyncio.TimerHandle] = None
-        keep.add(closing)
+        _keep(closing, keep)
         closing.add_done_callback(self._ended)
 
     def _ended(self, finished: "asyncio.Future") -> None:
-        self.keep.discard(finished)
         if self.hold is not None:
             self.hold.cancel()
-        if finished.cancelled():
-            if not self.gave_up:  # cancelled by something else than the SDK: nobody else logs it
-                logger.warning(
-                    "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open"
-                )
-        elif finished.exception() is not None:
+        if not finished.cancelled() and finished.exception() is not None:
             error = finished.exception()
             logger.warning("Closing the HTTP client failed: %s", _describe_network_error(error), exc_info=error)
 
     def give_up(self) -> None:
         if self.closing.done():
             return
-        self.gave_up = True
         self.closing.cancel()
         self.hold = asyncio.get_running_loop().call_later(CLOSE_HOLD, self._stop_holding)  # the timer holds the task
 
@@ -277,9 +275,11 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     that a ``TimeoutError`` that ``aclose`` raises by itself is a failure like any other and is never taken for the
     deadline. What happens to the task after that is in ``_AcloseWatch``.
 
-    A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see ``_close``);
-    the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself reports
-    ``Task was destroyed but it is pending``."""
+    An ``aclose`` that ends cancelled while this function waits for it was cancelled by something else than the SDK, and
+    is logged here, where the answer does not depend on the order in which asyncio steps the two tasks when a shutdown
+    cancels both. A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see
+    ``_close``); the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself
+    reports ``Task was destroyed but it is pending``."""
     closing = asyncio.ensure_future(client.aclose())
     watch = _AcloseWatch(closing, keep)
     try:
@@ -290,8 +290,13 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     if not done:
         watch.give_up()
         logger.warning(
-            "Closing the HTTP client timed out after %s seconds; its connections may stay open until they are collected",
+            "Closing the HTTP client timed out after %s seconds and was cancelled; "
+            "its connections may stay open if it does not end",
             CLOSE_TIMEOUT,
+        )
+    elif closing.cancelled():
+        logger.warning(
+            "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open"
         )
 
 
@@ -420,8 +425,7 @@ class AsyncHttpClient:
         cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
         ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on."""
         task = asyncio.ensure_future(_close_with_timeout(client, self._closing))
-        self._closing.add(task)
-        task.add_done_callback(self._closing.discard)
+        _keep(task, self._closing)
         task.add_done_callback(_log_cancelled_close)
         await asyncio.wait({task})
 

@@ -912,47 +912,89 @@ async def test_an_aclose_that_survives_the_cancellation_is_held_only_for_a_while
     await until(lambda: tracking.completed == 1)
 
 
-def outer_close_tasks(http):
-    """The tasks that wait for aclose (not the ones that run it)."""
-    return [task for task in http._closing if task.get_coro().__name__ == "_close_with_timeout"]
+@pytest.fixture
+def waiting_tasks(monkeypatch):
+    """The tasks that wait for aclose (not the ones that run it), recorded as the SDK starts them."""
+    import polako.sdk._async_client as client_module
+
+    recorded = []
+    original = client_module._close_with_timeout
+
+    async def recording(*args, **kwargs):
+        recorded.append(asyncio.current_task())
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(client_module, "_close_with_timeout", recording)
+    return recorded
 
 
 @pytest.mark.asyncio
-async def test_cancelling_the_task_that_waits_logs_once_and_holds_the_aclose_that_survives(
-    gateway, tracking, monkeypatch, caplog
+@pytest.mark.parametrize("aclose_survives", [True, False], ids=["aclose-survives", "aclose-honours-the-cancellation"])
+async def test_cancelling_the_task_that_waits_logs_once_and_holds_the_aclose_only_if_it_survives(
+    gateway, tracking, monkeypatch, caplog, waiting_tasks, aclose_survives
 ):
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set
-    survive = tracking.survive_gate = asyncio.Event()
+    survive = tracking.survive_gate = asyncio.Event() if aclose_survives else None
     monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", generate_short_timeout())
     await http.__aenter__()
 
     with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
         closing = asyncio.create_task(http.__aexit__(None, None, None))
-        await until(lambda: tracking.closed == 1 and outer_close_tasks(http))
-        for task in outer_close_tasks(http):
+        await until(lambda: tracking.closed == 1 and waiting_tasks)
+        for task in waiting_tasks:
             task.cancel()  # shutdown code that cancels the close task; aclose is not touched by it
         await closing
-        await until(lambda: "stops holding it" in caplog.text)  # the hold was scheduled by the give-up of this path
+        await until(lambda: not http._closing or aclose_survives)  # without a survivor aclose ends at once
+        if aclose_survives:
+            await until(lambda: "stops holding it" in caplog.text)  # the hold was scheduled by the give-up of this path
 
     assert caplog.text.count("was cancelled before it ended") == 1
-    assert "although the SDK did not cancel it" not in caplog.text  # the SDK cancelled aclose, so it is not logged again
-    survive.set()
-    await until(lambda: tracking.completed == 1)
+    # The SDK cancelled aclose, so it is not logged again as a foreign cancellation: checked after aclose has ended.
+    assert "although the SDK did not cancel it" not in caplog.text
+    if aclose_survives:
+        survive.set()
+        await until(lambda: tracking.completed == 1)
+    else:
+        assert "stops holding it" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_the_hold_timer_is_cancelled_when_aclose_ends(gateway, tracking, monkeypatch):
-    loop = asyncio.get_running_loop()
-    timers = []
-    original = loop.call_later
+@pytest.mark.parametrize("aclose_first", [True, False], ids=["aclose-first", "waiting-task-first"])
+async def test_a_shutdown_that_cancels_both_tasks_logs_the_same_whatever_the_order(
+    gateway, tracking, caplog, waiting_tasks, aclose_first
+):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    await http.__aenter__()
 
-    def recording(*args, **kwargs):
-        timers.append(original(*args, **kwargs))
-        return timers[-1]
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        closing = asyncio.create_task(http.__aexit__(None, None, None))
+        await until(lambda: tracking.closed == 1 and waiting_tasks)
+        inner = [task for task in http._closing if task not in waiting_tasks]
+        for task in (inner + waiting_tasks if aclose_first else waiting_tasks + inner):
+            task.cancel()  # what `asyncio.run` does at its end: every task in one go
+        await closing
+        await until(lambda: not http._closing)
 
-    monkeypatch.setattr(loop, "call_later", recording)
+    assert caplog.text.count("was cancelled before it ended") == 1
+    assert "although the SDK did not cancel it" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclose_ends(gateway, tracking, monkeypatch):
+    hold_delay = float(WAIT_LIMIT_SECONDS)  # a delay that nothing else in the SDK uses, to find the timer by
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", hold_delay)
     monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
+    timers = []
+    original = asyncio.BaseEventLoop.call_later
+
+    def recording(self, delay, callback, *args, **kwargs):
+        handle = original(self, delay, callback, *args, **kwargs)
+        timers.append((delay, handle))
+        return handle
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "call_later", recording)
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set: the cancellation of the deadline ends aclose at once
     await http.__aenter__()
@@ -960,8 +1002,23 @@ async def test_the_hold_timer_is_cancelled_when_aclose_ends(gateway, tracking, m
     await http.__aexit__(None, None, None)
     await until(lambda: not http._closing)
 
-    hold = [timer for timer in timers if timer.when() - loop.time() > WAIT_LIMIT_SECONDS / 2 or timer.cancelled()]
-    assert hold and all(timer.cancelled() for timer in hold)  # no timer is left to keep a finished task alive
+    holds = [handle for delay, handle in timers if delay == hold_delay]
+    assert len(holds) == 1  # scheduled, once
+    assert holds[0].cancelled()  # and nothing is left to keep a finished task alive
+
+
+@pytest.mark.asyncio
+async def test_the_timeout_line_does_not_claim_that_the_connections_stay_open(
+    client, gateway, tracking, platform, monkeypatch, caplog
+):
+    gateway.respond(body=make_order_status_response())
+    tracking.close_gate = asyncio.Event()  # never set: aclose honours the cancellation and ends
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert "was cancelled; its connections may stay open if it does not end" in caplog.text
 
 
 @pytest.mark.asyncio
