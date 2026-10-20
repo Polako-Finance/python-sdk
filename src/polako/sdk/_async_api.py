@@ -97,8 +97,8 @@ class AsyncPolakoClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit async context manager.
 
-        Raises:
-            RuntimeError: If the client is exited more often than it was entered (0.2.0 did nothing then)
+        An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0.
         """
         await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
 
@@ -250,7 +250,8 @@ class AsyncPolakoClient:
             session_id: Payment session UUID to refund
             platform_id: Platform identifier UUID for authentication
             secret_key: Secret key used for generating request signature
-            reason: Reason for the refund (REFUND_REASON_MIN_LENGTH to REFUND_REASON_MAX_LENGTH characters, now 3 to 255)
+            reason: Reason for the refund, from ``REFUND_REASON_MIN_LENGTH`` to ``REFUND_REASON_MAX_LENGTH``
+                characters (3 to 255; both names are exported by ``polako.sdk``)
             refund_items: Optional list of RefundItem for partial refund.
                           If None, all remaining items are refunded.
 

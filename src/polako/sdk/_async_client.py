@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import logging
 import re
 import ssl
+import warnings
 from typing import Any, Dict, Iterator, Literal, Optional, Type, TypeVar, Union
 
 import anyio
@@ -20,6 +22,8 @@ from polako.sdk._exceptions import (
 from polako.sdk._serializable import Serializable
 
 T = TypeVar("T", bound=Serializable)
+
+logger = logging.getLogger(__name__)
 
 IDEMPOTENCY_KEY_HEADER = "idempotency-key"
 
@@ -131,8 +135,9 @@ RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProt
 # What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
 # aborted, refused or broken, a timeout of the system.
 _TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError)
-# What anyio raises for a stream that was cut, when the httpcore in use does not map it to an error of its own (httpcore
-# before 1.0.5 maps neither the end of the stream during the handshake nor all broken streams).
+# What anyio raises for a stream that was cut, when the httpcore in use does not map it to an error of its own. Some
+# httpcore versions may let these through (an older one did not map the end of a stream during the handshake; this was
+# not checked against the sources of each version, and the catch does not depend on it).
 _CUT_STREAM_ERRORS = (anyio.EndOfStream, anyio.BrokenResourceError)
 # TLS failures that a repeat cures. The ``reason`` code is matched, not the text of the message, and only what is
 # named is retried, so that a code the running Python does not know (its table of reasons is the one it was built
@@ -192,13 +197,35 @@ def _is_retryable_error(error: BaseException) -> bool:
     return isinstance(error, _TRANSIENT_OS_ERRORS + _CUT_STREAM_ERRORS)
 
 
-async def _close_quietly(client: httpx.AsyncClient) -> None:
-    """Close the client without letting an error of the close out. The close is shielded, so that a cancellation of the
-    caller does not cut it short; the cancellation itself still reaches the caller."""
+CLOSE_TIMEOUT = 10.0  # seconds a call waits for the close of the client it was the last to use
+_closing: set = set()  # the tasks that close clients; the loop keeps only weak references to tasks
+
+
+async def _close_with_timeout(client: httpx.AsyncClient) -> None:
+    """Close the client, bounded in time. A failure is logged and goes no further: it must not replace the outcome of
+    the call that closes the client (a subscription that was created)."""
     try:
-        await asyncio.shield(client.aclose())
-    except Exception:  # noqa: BLE001 - the outcome of the call matters more than a failed close
-        pass
+        await asyncio.wait_for(client.aclose(), CLOSE_TIMEOUT)
+    except Exception as e:  # noqa: BLE001 - see above; the failure is logged, not dropped
+        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e))
+
+
+async def _close_quietly(client: httpx.AsyncClient) -> None:
+    """Close the client for a call that was the last to use it, and let no failure of the close out (see
+    ``_close_with_timeout``). The close runs as a task that the SDK keeps a reference to and that is waited for even if
+    the call is cancelled meanwhile, so that the connections are closed; the cancellation itself still reaches the
+    caller once the close is done."""
+    task = asyncio.ensure_future(_close_with_timeout(client))
+    _closing.add(task)
+    task.add_done_callback(_closing.discard)
+    cancelled: Optional[asyncio.CancelledError] = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as e:
+            cancelled = e  # keep waiting: the close is bounded by CLOSE_TIMEOUT
+    if cancelled is not None:
+        raise cancelled
 
 
 class AsyncHttpClient:
@@ -290,11 +317,16 @@ class AsyncHttpClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit async context manager.
 
-        Raises:
-            RuntimeError: If the client is exited more often than it was entered
+        An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0.
         """
         if self._entered == 0:
-            raise RuntimeError("The client was exited more often than it was entered")
+            warnings.warn(
+                "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
         self._entered -= 1
         await self._close_if_unused()
 

@@ -942,6 +942,7 @@ files = []
 develop = true
 
 [package.dependencies]
+anyio = ">=3"
 httpx = {version = ">=0.25,<1.0", extras = ["http2"]}
 
 [package.source]
@@ -1421,4 +1422,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "ed59ec8a4f54ec0209614295a6066f1b2aaffec3a1c509c0e43798fe3576bdb8"
+content-hash = "1245006e40a29a68e42b3fbd7fee900844b20ab252bd0f42c40e4df0fd82f567"

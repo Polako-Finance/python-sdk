@@ -25,7 +25,13 @@ Example:
 """
 
 from polako.sdk._async_api import AsyncPolakoClient as PolakoClient
-from polako.sdk._constants import BillingInterval, ChargeAttemptStatus, SubscriptionStatus
+from polako.sdk._constants import (
+    REFUND_REASON_MAX_LENGTH,
+    REFUND_REASON_MIN_LENGTH,
+    BillingInterval,
+    ChargeAttemptStatus,
+    SubscriptionStatus,
+)
 from polako.sdk._exceptions import (
     ConfigurationError,
     ConflictError,
@@ -120,6 +126,8 @@ __all__ = [
     "SessionInfo",
     "ShoppingCart",
     # Subscriptions
+    "REFUND_REASON_MAX_LENGTH",
+    "REFUND_REASON_MIN_LENGTH",
     "BillingInterval",
     "SubscriptionStatus",
     "ChargeAttemptStatus",

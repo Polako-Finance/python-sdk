@@ -17,6 +17,9 @@ polako-finance = { path = "..", develop = true }
 pytest = ">=9.0.3"
 pytest-asyncio = ">=0.21.1"
 pytest-cov = ">=4.1.0"
+# The tests raise the errors of anyio and httpcore the way the transport does.
+anyio = ">=3"
+httpcore = ">=0.18"
 # The gateway emulator and the merchant receiver in tests/integration are aiohttp applications.
 aiohttp = ">=3.9"
 

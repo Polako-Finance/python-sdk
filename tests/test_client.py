@@ -1,6 +1,7 @@
 """Every public payment method of the client against a fake gateway."""
 
 import asyncio
+import logging
 import random
 import ssl
 from typing import Optional
@@ -11,6 +12,7 @@ import httpcore
 import httpx
 import pytest
 
+import polako.sdk as sdk
 from polako.sdk import (
     ConfigurationError,
     HttpClientError,
@@ -19,7 +21,7 @@ from polako.sdk import (
     InvalidHeaderValueError,
     PolakoClient,
 )
-from polako.sdk._async_client import _CUT_CONNECTION_REASONS, _DAMAGED_RECORD_REASONS, AsyncHttpClient
+from polako.sdk._async_client import _CUT_CONNECTION_REASONS, _DAMAGED_RECORD_REASONS, AsyncHttpClient, _closing
 from polako.sdk._constants import REFUND_REASON_MAX_LENGTH, REFUND_REASON_MIN_LENGTH
 from tests.factories import (
     make_customer_info,
@@ -469,6 +471,8 @@ class TrackingClient(httpx.AsyncClient):
     closed = 0
     built = 0
     close_error = None
+    close_gate = None  # an Event that a close waits for, to cancel a call while it is closing
+    completed = 0  # closes that ran to the end
 
     def __init__(self, *args, **kwargs):
         type(self).built += 1
@@ -476,7 +480,10 @@ class TrackingClient(httpx.AsyncClient):
 
     async def aclose(self):
         type(self).closed += 1
+        if type(self).close_gate is not None:
+            await type(self).close_gate.wait()
         await super().aclose()
+        type(self).completed += 1
         if type(self).close_error is not None:
             raise type(self).close_error
 
@@ -487,6 +494,8 @@ def tracking(gateway, monkeypatch):
     TrackingClient.closed = 0
     TrackingClient.built = 0
     TrackingClient.close_error = None
+    TrackingClient.close_gate = None
+    TrackingClient.completed = 0
 
     def factory(*args, **kwargs):
         kwargs["transport"] = httpx.MockTransport(gateway)
@@ -711,16 +720,104 @@ async def test_calls_outside_async_with_while_another_task_holds_it_share_the_cl
 
 
 @pytest.mark.asyncio
-async def test_leaving_more_often_than_entering_is_an_error_not_silence():
+async def test_leaving_more_often_than_entering_warns_and_changes_nothing(gateway, tracking):
+    gateway.respond(body=make_order_status_response())
     http = AsyncHttpClient(f"https://{generate_random_host()}")
 
-    with pytest.raises(RuntimeError):
+    with pytest.warns(RuntimeWarning, match="0.3.0"):
         await http.__aexit__(None, None, None)
 
     async with http:
-        pass
-    with pytest.raises(RuntimeError):
+        await http.get(any_path())
+    with pytest.warns(RuntimeWarning):
         await http.__aexit__(None, None, None)
+
+    assert tracking.closed == 1
+    assert http._entered == 0 and http._client is None
+
+
+@pytest.mark.asyncio
+async def test_an_exit_without_an_entry_does_not_replace_an_error_that_is_propagating():
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    marker = generate_readable_string(8)
+
+    with pytest.warns(RuntimeWarning):
+        with pytest.raises(KeyError, match=marker):
+            try:
+                raise KeyError(marker)
+            finally:
+                await http.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_call_cancelled_while_it_closes_the_client_still_waits_for_the_close(gateway, tracking, monkeypatch):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    gate = tracking.close_gate = asyncio.Event()
+
+    async def holder_leaves_first(*args, **kwargs):
+        await http.__aexit__(None, None, None)  # the call becomes the last user, so it closes the client
+
+    await http.__aenter__()
+    monkeypatch.setattr(http, "_attempts", holder_leaves_first)
+    call = asyncio.create_task(http.get(any_path()))
+    while tracking.closed == 0:
+        await asyncio.sleep(0)  # the close has started and waits at the gate
+
+    call.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not call.done()  # it keeps waiting for the close
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert tracking.completed == 1  # the close ran to the end although the call was cancelled
+    assert not _closing  # and no task is left
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_hangs_is_bounded_and_the_call_returns_its_result(
+    client, gateway, tracking, platform, monkeypatch, caplog
+):
+    response = make_order_status_response()
+    gateway.respond(body=response)
+    tracking.close_gate = asyncio.Event()  # never set
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", 0.01)
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        status = await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert status.status == response["status"]
+    assert "Closing the HTTP client failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_close_is_logged_not_lost(client, gateway, tracking, platform, caplog):
+    gateway.respond(body=make_order_status_response())
+    text = generate_readable_string(12)
+    tracking.close_error = RuntimeError(text)
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert f"Closing the HTTP client failed: RuntimeError: {text}" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("length", [REFUND_REASON_MIN_LENGTH, REFUND_REASON_MAX_LENGTH])
+async def test_a_refund_reason_of_exactly_the_limit_is_accepted(client, gateway, platform, length):
+    session_id = uuid4()
+    gateway.respond(body=make_refund_response(session_id=str(session_id), session_status="REFUNDED"))
+    reason = generate_readable_string(length)
+
+    async with client:
+        await client.refund_session(session_id, platform.platform_id, platform.secret_key, reason)
+
+    assert gateway.last_json()["reason"] == reason
+
+
+def test_the_limits_of_the_refund_reason_are_exported():
+    assert sdk.REFUND_REASON_MIN_LENGTH == REFUND_REASON_MIN_LENGTH < REFUND_REASON_MAX_LENGTH == sdk.REFUND_REASON_MAX_LENGTH
 
 
 @pytest.mark.asyncio
