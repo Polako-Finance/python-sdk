@@ -942,7 +942,7 @@ files = []
 develop = true
 
 [package.dependencies]
-httpx = {version = ">=0.25", extras = ["http2"]}
+httpx = {version = ">=0.25,<1.0", extras = ["http2"]}
 
 [package.source]
 type = "directory"

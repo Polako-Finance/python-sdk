@@ -148,8 +148,7 @@ _TRANSIENT_TLS_REASONS = frozenset(
         "BAD_LENGTH",
         "PACKET_LENGTH_TOO_LONG",
         "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-        "SSLV3_ALERT_UNEXPECTED_MESSAGE",
-        "TLSV1_ALERT_DECODE_ERROR",
+        "UNEXPECTED_EOF_WHILE_READING",
     }
 )
 
@@ -160,11 +159,15 @@ def _is_transient_tls_error(error: ssl.SSLError) -> bool:
 
 def _is_retryable_error(error: BaseException) -> bool:
     """Whether a repeat can cure the failure. A repeat of a failure that is permanent gives the same result and spends
-    the rate limit, so it is not retried. If a TLS error is on the chain of the error (httpx wraps it), it decides:
-    only a cut connection or a damaged record is retried. Otherwise the kind of the error decides."""
-    tls_error = next((link for link in _error_chain(error) if isinstance(link, ssl.SSLError)), None)
-    if tls_error is not None:
-        return _is_transient_tls_error(tls_error)
+    the rate limit, so it is not retried. The TLS error decides only for a failure to connect (``httpx.ConnectError``,
+    which is where the handshake happens and where a certificate, a protocol version or a cipher can fail) and for a
+    TLS error that nothing wrapped: only a cut connection or a damaged record is retried. A failure of an established
+    connection (a read or a write that broke) is retried by its kind, whatever TLS error caused it. Otherwise the
+    kind of the error decides."""
+    if isinstance(error, (httpx.ConnectError, ssl.SSLError)):
+        tls_error = next((link for link in _error_chain(error) if isinstance(link, ssl.SSLError)), None)
+        if tls_error is not None:
+            return _is_transient_tls_error(tls_error)
     if isinstance(error, RETRYABLE_ERRORS):
         return True
     return isinstance(error, _TRANSIENT_OS_ERRORS)
@@ -183,9 +186,10 @@ class AsyncHttpClient:
     connection that was reset, aborted, refused or broken, a timeout of the system, a cut TLS connection), with the same key
     and body, up to ``max_attempts`` attempts in total. A status such as 501 or 505, an unsupported address, too many
     redirects, a certificate that does not verify, a wrong TLS protocol version and a failure to set up the client (an
-    unreadable certificate file) are not cured by a repeat and are raised at once. A TLS failure is told apart by the
-    ``reason`` code of the error, not by its text; only a cut connection or a damaged record is retried. Every other request
-    is sent exactly once.
+    unreadable certificate file, a proxy setting that cannot be used) are not cured by a repeat and are raised at once. A TLS
+    failure while connecting is told apart by the ``reason`` code of the error, not by its text; only a cut connection or a
+    damaged record is retried, and a read or a write that broke on an established connection is retried by its kind. Every
+    other request is sent exactly once.
     A failure is an ``HttpClientError`` whose message names the failure and, after a retry, the number of attempts.
     """
 
@@ -223,33 +227,43 @@ class AsyncHttpClient:
             self._default_headers.update(headers)
 
         self._client: Optional[httpx.AsyncClient] = None
+        self._entered = 0  # how many `async with` blocks are open on this object
 
     def _new_client(self) -> httpx.AsyncClient:
         """The httpx client. Building it reads the certificate file and the proxy settings of the environment, so it
         fails when ``SSL_CERT_FILE`` names a file that exists but is unreadable or malformed, or when a proxy setting
         cannot be used (an unknown scheme, a SOCKS proxy without the ``socksio`` package). Whatever the kind of the
-        error, it is an ``HttpClientError`` with the error as the cause, and a repeat cannot cure it."""
+        error, it is an ``HttpClientError`` with the error as the cause, and a repeat cannot cure it. What fails at set-up
+        depends on the version of httpx: with 0.25 a missing ``SSL_CERT_FILE`` is skipped, with 0.28 it fails here.
+        Only the errors of the environment are caught (``OSError``, ``ValueError``, ``ImportError``); a ``TypeError`` or
+        an ``AttributeError`` is a mistake in the code or in a version of httpx, and is not hidden."""
         try:
             return httpx.AsyncClient(timeout=self.timeout)
-        except Exception as e:
+        except (OSError, ValueError, ImportError) as e:
             raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
 
     async def __aenter__(self) -> "AsyncHttpClient":
         """Enter async context manager.
 
         Raises:
-            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that exists but is
-                malformed, or a proxy setting cannot be used. This happens here, not at a call, so keep ``async with``
-                inside the ``try`` of your error handling.
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that is malformed (with
+                httpx 0.28 also one that is missing), or a proxy setting cannot be used. This happens here, not at a
+                call, so keep ``async with`` inside the ``try`` of your error handling.
+
+        Entering again (nested, or from another task) shares the client that is open; it is closed when the last
+        context exits.
         """
-        self._client = self._new_client()
+        if self._client is None:
+            self._client = self._new_client()
+        self._entered += 1
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit async context manager."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        self._entered = max(0, self._entered - 1)
+        if self._entered == 0 and self._client:
+            client, self._client = self._client, None
+            await client.aclose()
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""
@@ -370,7 +384,8 @@ class AsyncHttpClient:
             InvalidHeaderValueError: If a header value is not printable ASCII or has whitespace at either end
             HttpRequestError: If the gateway answers with an error status or the answer cannot be parsed
             HttpClientError: If the request fails before an answer arrives, e.g. a refused connection or a timeout
-                (the original error is its ``__cause__``), or the client cannot be set up (a bad SSL_CERT_FILE)
+                (the original error is its ``__cause__``), or the client cannot be set up (a malformed SSL_CERT_FILE,
+                a proxy setting that cannot be used)
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
         request_headers = self._build_headers(headers)

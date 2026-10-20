@@ -82,9 +82,9 @@ class AsyncPolakoClient:
         """Enter async context manager.
 
         Raises:
-            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that exists but is
-                malformed, or a proxy setting cannot be used. This happens at ``async with``, not at a call, so keep
-                that line inside the ``try`` of your error handling.
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that is
+                malformed (with httpx 0.28 also one that is missing), or a proxy setting cannot be used. This happens at
+                ``async with``, not at a call, so keep that line inside the ``try`` of your error handling.
         """
         await self._http_client.__aenter__()
         return self
@@ -115,7 +115,7 @@ class AsyncPolakoClient:
         Raises:
             InvalidArgumentError: If validation of order or customer fails
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         # Validate both arguments before sending request
         order.validate()
@@ -169,7 +169,7 @@ class AsyncPolakoClient:
 
         Raises:
             HttpRequestError: If the API request fails (e.g., 404 if session not found, 410 if expired)
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         return await self._http_client.get(
             f"/v1/session/{session_id}",
@@ -205,7 +205,7 @@ class AsyncPolakoClient:
         Raises:
             InvalidArgumentError: If validation of customer info fails
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         customer.validate()
 
@@ -251,7 +251,7 @@ class AsyncPolakoClient:
         Raises:
             InvalidArgumentError: If reason is too short/long or refund_items is empty
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         if not reason or len(reason) < 3:
             raise InvalidArgumentError("'reason' must be at least 3 characters")
@@ -301,7 +301,7 @@ class AsyncPolakoClient:
 
         Raises:
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         signature = self._create_signature(
             f"status|{session_id}|{platform_id}",
@@ -373,7 +373,7 @@ class AsyncPolakoClient:
             RequestValidationError: If the server rejects a field, e.g. a currency that is not allowed (HTTP 422)
             RateLimitedError: If the rate limit is hit and the wait is too long to retry (HTTP 429)
             ServerError: If the gateway or the card processor fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
 
@@ -463,7 +463,7 @@ class AsyncPolakoClient:
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
             HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
         subscription = check_subscription_id(subscription_id)
@@ -517,7 +517,7 @@ class AsyncPolakoClient:
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
             HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
         query = SubscriptionListQuery.from_arguments(
@@ -570,7 +570,7 @@ class AsyncPolakoClient:
             ConflictError: If subscriptions are off for the company or the subscription is not active (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("pause", subscription_id)
 
@@ -594,7 +594,7 @@ class AsyncPolakoClient:
             ConflictError: If subscriptions are off for the company or the subscription is not paused (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("resume", subscription_id)
 
@@ -618,7 +618,7 @@ class AsyncPolakoClient:
             ConflictError: If subscriptions are off for the company or the subscription is already cancelled (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("cancel", subscription_id)
 

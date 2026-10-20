@@ -12,7 +12,7 @@ from polako.sdk import (
     UnauthorizedError,
 )
 from polako.sdk._async_client import AsyncHttpClient
-from tests.factories import make_idempotency_key, make_order_status_response
+from tests.factories import make_idempotency_key, make_success_step
 from tests.generators import generate_random_host, generate_readable_string
 
 
@@ -28,7 +28,7 @@ def keyed(key) -> dict:
 
 @pytest.fixture
 def success() -> dict:
-    return {"status": 200, "body": make_order_status_response()}
+    return make_success_step()
 
 
 def http_client(**kwargs):

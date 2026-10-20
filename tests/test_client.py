@@ -31,6 +31,7 @@ from tests.factories import (
     make_session_info_response,
     make_subscribe_args,
     make_subscribe_response,
+    make_success_step,
     sign,
 )
 from tests.generators import generate_random_host, generate_readable_string
@@ -42,11 +43,6 @@ def keyed() -> dict:
 
 def any_path() -> str:
     return f"/v1/{generate_readable_string(6)}"
-
-
-def success() -> dict:
-    """A step for `gateway.sequence`: the gateway answers 200 with an order status."""
-    return {"status": 200, "body": make_order_status_response()}
 
 
 def any_body() -> dict:
@@ -305,8 +301,7 @@ TRANSIENT_TLS_REASONS = [
     "BAD_LENGTH",
     "PACKET_LENGTH_TOO_LONG",
     "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-    "SSLV3_ALERT_UNEXPECTED_MESSAGE",
-    "TLSV1_ALERT_DECODE_ERROR",
+    "UNEXPECTED_EOF_WHILE_READING",
 ]
 
 
@@ -339,6 +334,8 @@ PERMANENT_FAILURES = [
     tls("NO_CERTIFICATE_OR_CRL_FOUND"),
     tls("EE_KEY_TOO_SMALL"),
     tls("TLSV1_ALERT_INTERNAL_ERROR"),
+    tls("SSLV3_ALERT_UNEXPECTED_MESSAGE"),
+    tls("TLSV1_ALERT_DECODE_ERROR"),
     pytest.param(lambda text: tls_error(generate_readable_string(10).upper(), text), id="made-up-reason"),
     pytest.param(lambda text: tls_error(None, text), id="no-reason"),
     pytest.param(lambda text: FileNotFoundError(text), id="FileNotFoundError"),
@@ -346,15 +343,15 @@ PERMANENT_FAILURES = [
 ]
 
 
-def wrapped_by_httpx(make_cause):
-    """The shape httpx really gives: httpx.ConnectError, caused by httpcore.ConnectError, which holds the original
-    error as the context that `raise ... from None` suppressed."""
+def wrapped_by_httpx(make_cause, outer_class=httpx.ConnectError):
+    """The shape httpx really gives: an httpx error (a ConnectError while connecting), caused by the httpcore error
+    of the same name, which holds the original error as the context that `raise ... from None` suppressed."""
 
     def make(text):
-        inner = httpcore.ConnectError(generate_readable_string(8))
+        inner = getattr(httpcore, outer_class.__name__)(generate_readable_string(8))
         inner.__context__ = make_cause(text)
         inner.__suppress_context__ = True
-        outer = httpx.ConnectError(generate_readable_string(8))
+        outer = outer_class(generate_readable_string(8))
         outer.__cause__ = inner
         return outer
 
@@ -389,7 +386,29 @@ async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gatewa
     ],
 )
 async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway, sleeps, make_error):
-    gateway.sequence(make_error(generate_readable_string(12)), success())
+    gateway.sequence(make_error(generate_readable_string(12)), make_success_step())
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert len(gateway.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outer_class", [httpx.ReadError, httpx.WriteError], ids=["ReadError", "WriteError"])
+@pytest.mark.parametrize(
+    "make_cause",
+    [
+        pytest.param(lambda text: tls_error("UNEXPECTED_EOF_WHILE_READING", text), id="UNEXPECTED_EOF_WHILE_READING"),
+        pytest.param(lambda text: tls_error(None, text), id="no-reason"),
+        pytest.param(lambda text: tls_error("WRONG_VERSION_NUMBER", text), id="any-reason"),
+        pytest.param(lambda text: ConnectionResetError(text), id="ConnectionResetError"),
+    ],
+)
+async def test_a_failure_of_an_established_connection_is_retried_by_its_kind_whatever_its_cause(
+    gateway, sleeps, outer_class, make_cause
+):
+    gateway.sequence(wrapped_by_httpx(make_cause, outer_class)(generate_readable_string(12)), make_success_step())
 
     async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
         await http.post(any_path(), request_body=any_body(), headers=keyed())
@@ -498,7 +517,6 @@ async def test_the_client_of_async_with_is_left_open_by_a_call_and_closed_on_exi
 
 @pytest.mark.asyncio
 async def test_a_client_of_async_with_entered_after_a_call_outside_it_is_closed_once_on_exit(gateway, tracking):
-    # `async with` is exited and entered again while a call is in flight: the call must not close the new client.
     gateway.respond(body=make_order_status_response())
     http = AsyncHttpClient(f"https://{generate_random_host()}")
 
@@ -509,6 +527,54 @@ async def test_a_client_of_async_with_entered_after_a_call_outside_it_is_closed_
         assert tracking.closed == 1
 
     assert tracking.closed == 2
+
+
+@pytest.mark.asyncio
+async def test_a_call_does_not_close_the_shared_client_when_the_context_is_exited_during_the_call(
+    gateway, tracking, monkeypatch
+):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    async def exits_meanwhile(*args, **kwargs):
+        await http.__aexit__(None, None, None)
+
+    async with http:
+        monkeypatch.setattr(http, "_attempts", exits_meanwhile)
+        await http.get(any_path())
+
+    assert tracking.closed == 1  # by the exit; the call added none
+
+
+@pytest.mark.asyncio
+async def test_a_call_does_not_close_a_client_that_was_opened_during_the_call(gateway, tracking, monkeypatch):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    async def exits_and_enters_meanwhile(*args, **kwargs):
+        await http.__aexit__(None, None, None)
+        await http.__aenter__()
+
+    async with http:
+        monkeypatch.setattr(http, "_attempts", exits_and_enters_meanwhile)
+        await http.get(any_path())
+        assert tracking.closed == 1  # the first client, by the exit; the new one is still open
+
+    assert tracking.closed == 2
+
+
+@pytest.mark.asyncio
+async def test_async_with_entered_twice_shares_one_client_and_closes_it_with_the_last_exit(gateway, tracking):
+    gateway.respond(body=make_order_status_response())
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    async with http:
+        first = http._client
+        async with http:
+            assert http._client is first
+            await http.get(any_path())
+        assert tracking.closed == 0
+        await http.get(any_path())
+
+    assert tracking.closed == 1
 
 
 @pytest.mark.asyncio
@@ -528,13 +594,28 @@ async def test_a_malformed_certificate_file_fails_at_set_up(monkeypatch, tmp_pat
 
 @pytest.mark.asyncio
 async def test_a_proxy_setting_that_cannot_be_used_is_a_client_error_not_a_raw_value_error(monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ALL_PROXY", f"{generate_readable_string(6).lower()}://{generate_random_host()}")
 
     with pytest.raises(HttpClientError) as exc:
-        await AsyncHttpClient(f"https://{generate_random_host()}").get(any_path())
+        async with AsyncHttpClient(f"https://{generate_random_host()}"):  # the set-up only: nothing is sent
+            pass
 
     assert exc.value.message.startswith("Client set-up failed: ")
     assert isinstance(exc.value.__cause__, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_a_mistake_in_the_code_at_set_up_is_not_turned_into_a_client_error(monkeypatch):
+    def broken(*args, **kwargs):
+        raise TypeError(generate_readable_string(12))
+
+    monkeypatch.setattr(httpx, "AsyncClient", broken)
+
+    with pytest.raises(TypeError):
+        async with AsyncHttpClient(f"https://{generate_random_host()}"):
+            pass
 
 
 @pytest.mark.asyncio
@@ -547,7 +628,9 @@ async def test_one_client_serves_all_attempts_outside_async_with(gateway, sleeps
         return real(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", counting)
-    gateway.sequence(httpx.ReadTimeout(generate_readable_string(8)), httpx.ReadTimeout(generate_readable_string(8)), success())
+    gateway.sequence(
+        httpx.ReadTimeout(generate_readable_string(8)), httpx.ReadTimeout(generate_readable_string(8)), make_success_step()
+    )
     http = AsyncHttpClient(f"https://{generate_random_host()}")
 
     await http.post(any_path(), request_body=any_body(), headers=keyed())
@@ -609,7 +692,7 @@ async def test_an_error_answer_with_an_empty_body_does_not_end_after_the_colon(c
 @pytest.mark.asyncio
 async def test_an_error_the_caller_is_handling_is_not_taken_for_the_reason_of_a_new_failure(gateway, sleeps):
     # A merchant retries inside `except`: the old error is the __context__ of whatever the new call raises.
-    gateway.sequence(httpx.ReadTimeout(generate_readable_string(8)), success())
+    gateway.sequence(httpx.ReadTimeout(generate_readable_string(8)), make_success_step())
 
     async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
         try:
@@ -640,7 +723,7 @@ async def test_the_walk_over_the_chain_stops_at_an_error_of_the_sdk(gateway, sle
     error = httpx.ReadTimeout(generate_readable_string(8))
     error.__cause__ = HttpClientError(generate_readable_string(8))
     error.__cause__.__cause__ = ssl.SSLCertVerificationError(generate_readable_string(12))
-    gateway.sequence(error, success())
+    gateway.sequence(error, make_success_step())
 
     async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
         await http.post(any_path(), request_body=any_body(), headers=keyed())
