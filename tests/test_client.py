@@ -6,6 +6,7 @@ import ssl
 from typing import Optional
 from uuid import uuid4
 
+import anyio
 import httpcore
 import httpx
 import pytest
@@ -18,7 +19,8 @@ from polako.sdk import (
     InvalidHeaderValueError,
     PolakoClient,
 )
-from polako.sdk._async_client import _DAMAGED_RECORD_REASONS, AsyncHttpClient
+from polako.sdk._async_client import _CUT_CONNECTION_REASONS, _DAMAGED_RECORD_REASONS, AsyncHttpClient
+from polako.sdk._constants import REFUND_REASON_MAX_LENGTH, REFUND_REASON_MIN_LENGTH
 from tests.factories import (
     make_customer_info,
     make_idempotency_key,
@@ -166,7 +168,14 @@ async def test_refund_full_and_partial(client, gateway, platform):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason, items", [("no", None), ("x" * 256, None), (generate_readable_string(20), [])])
+@pytest.mark.parametrize(
+    "reason, items",
+    [
+        (generate_readable_string(REFUND_REASON_MIN_LENGTH - 1), None),
+        (generate_readable_string(REFUND_REASON_MAX_LENGTH + 1), None),
+        (generate_readable_string(20), []),
+    ],
+)
 async def test_refund_argument_validation(client, gateway, platform, reason, items):
     async with client:
         with pytest.raises(ValueError):
@@ -286,10 +295,6 @@ def tls_error(reason: Optional[str], text: str) -> ssl.SSLError:
     return error
 
 
-def tls(reason: str, **params):
-    return pytest.param(lambda text: tls_error(reason, text), id=reason, **params)
-
-
 # The reason codes of TLS errors that a test pins. DAMAGED_RECORD_REASONS is written out here on purpose and compared
 # with the SDK's constant, so a reason cannot be added to or taken from the SDK's list without a decision here.
 # PERMANENT_TLS_REASONS are failures of the setup that a repeat does not cure; no test may find them on the SDK's list.
@@ -303,9 +308,9 @@ DAMAGED_RECORD_REASONS = [
     "BAD_LENGTH",
     "PACKET_LENGTH_TOO_LONG",
     "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-    "SSLV3_ALERT_UNEXPECTED_MESSAGE",
-    "TLSV1_ALERT_DECODE_ERROR",
 ]
+# A plain SSLError that carries it is a cut connection (CPython raises it as SSLEOFError); compared with the SDK too.
+CUT_CONNECTION_REASONS = ["UNEXPECTED_EOF_WHILE_READING"]
 PERMANENT_TLS_REASONS = [
     "CERTIFICATE_VERIFY_FAILED",
     "WRONG_VERSION_NUMBER",
@@ -317,7 +322,10 @@ PERMANENT_TLS_REASONS = [
     "NO_CERTIFICATE_OR_CRL_FOUND",
     "EE_KEY_TOO_SMALL",
     "TLSV1_ALERT_INTERNAL_ERROR",
-    "UNEXPECTED_EOF_WHILE_READING",  # CPython maps it to SSLEOFError; as a bare reason it is not a rule of its own
+    # Under TLS 1.3 the client's handshake is over before the server judges its last flight, so these two alerts can be
+    # a deterministic rejection that arrives unwrapped on the first read.
+    "SSLV3_ALERT_UNEXPECTED_MESSAGE",
+    "TLSV1_ALERT_DECODE_ERROR",
 ]
 
 
@@ -326,23 +334,27 @@ def test_the_damaged_record_reasons_of_the_sdk_are_the_ones_the_tests_name():
     assert len(DAMAGED_RECORD_REASONS) == len(set(DAMAGED_RECORD_REASONS))
 
 
-def test_no_permanent_reason_is_on_the_list_of_the_sdk():
-    assert not set(PERMANENT_TLS_REASONS) & set(_DAMAGED_RECORD_REASONS)
+def test_the_cut_connection_reasons_of_the_sdk_are_the_ones_the_tests_name():
+    assert set(CUT_CONNECTION_REASONS) == set(_CUT_CONNECTION_REASONS)
+
+
+def test_no_permanent_reason_is_on_the_lists_of_the_sdk():
+    assert not set(PERMANENT_TLS_REASONS) & (set(_DAMAGED_RECORD_REASONS) | set(_CUT_CONNECTION_REASONS))
 
 
 CUT_CONNECTION_CLASSES = [ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError]
 OS_TRANSIENT_CLASSES = [ConnectionResetError, ConnectionAbortedError, ConnectionRefusedError, BrokenPipeError, TimeoutError]
 OS_PERMANENT_CLASSES = [FileNotFoundError, PermissionError]
-
-
-def cases(*makers):
-    return [pytest.param(make, id=name) for name, make in makers]
+# What anyio raises for a cut stream; an httpcore older than 1.0.5 lets some of them through unmapped.
+CUT_STREAM_CLASSES = [anyio.EndOfStream, anyio.BrokenResourceError]
 
 
 # An error as it reaches the SDK from an established connection or from the system, nothing around it.
-UNWRAPPED_TRANSIENT = [
-    pytest.param(lambda text, c=c: c(text), id=c.__name__) for c in CUT_CONNECTION_CLASSES + OS_TRANSIENT_CLASSES
-] + [pytest.param(lambda text, r=r: tls_error(r, text), id=r) for r in DAMAGED_RECORD_REASONS]
+UNWRAPPED_TRANSIENT = (
+    [pytest.param(lambda text, c=c: c(text), id=c.__name__) for c in CUT_CONNECTION_CLASSES + OS_TRANSIENT_CLASSES]
+    + [pytest.param(lambda text, c=c: c(text), id=f"anyio-{c.__name__}") for c in CUT_STREAM_CLASSES]
+    + [pytest.param(lambda text, r=r: tls_error(r, text), id=r) for r in DAMAGED_RECORD_REASONS + CUT_CONNECTION_REASONS]
+)
 UNWRAPPED_PERMANENT = (
     [pytest.param(lambda text: ssl.SSLCertVerificationError(text), id="SSLCertVerificationError")]
     + [pytest.param(lambda text, r=r: tls_error(r, text), id=r) for r in PERMANENT_TLS_REASONS]
@@ -371,7 +383,7 @@ def wrapped_by_httpx(make_cause):
 CONNECT_TRANSIENT = [
     pytest.param(wrapped_by_httpx(lambda text, c=c: c(text)), id=f"connect-{c.__name__}")
     for c in CUT_CONNECTION_CLASSES + OS_TRANSIENT_CLASSES
-]
+] + [pytest.param(wrapped_by_httpx(lambda text, r=r: tls_error(r, text)), id=f"connect-{r}") for r in CUT_CONNECTION_REASONS]
 CONNECT_PERMANENT = (
     [pytest.param(wrapped_by_httpx(lambda text: ssl.SSLCertVerificationError(text)), id="connect-SSLCertVerificationError")]
     + [pytest.param(wrapped_by_httpx(lambda text, r=r: tls_error(r, text)), id=f"connect-{r}") for r in PERMANENT_TLS_REASONS]
@@ -456,6 +468,7 @@ class TrackingClient(httpx.AsyncClient):
 
     closed = 0
     built = 0
+    close_error = None
 
     def __init__(self, *args, **kwargs):
         type(self).built += 1
@@ -464,6 +477,8 @@ class TrackingClient(httpx.AsyncClient):
     async def aclose(self):
         type(self).closed += 1
         await super().aclose()
+        if type(self).close_error is not None:
+            raise type(self).close_error
 
 
 @pytest.fixture
@@ -471,6 +486,7 @@ def tracking(gateway, monkeypatch):
     """Every client the SDK builds is a TrackingClient that talks to the fake gateway."""
     TrackingClient.closed = 0
     TrackingClient.built = 0
+    TrackingClient.close_error = None
 
     def factory(*args, **kwargs):
         kwargs["transport"] = httpx.MockTransport(gateway)
@@ -586,6 +602,112 @@ async def test_tasks_entering_and_leaving_the_same_client_share_one_and_close_it
 
     assert tracking.built == 1
     assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_close_does_not_replace_the_result_of_a_call_outside_async_with(client, gateway, tracking, platform):
+    response = make_order_status_response()
+    gateway.respond(body=response)
+    tracking.close_error = RuntimeError(generate_readable_string(12))
+
+    status = await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert status.status == response["status"]
+    assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_close_does_not_replace_the_result_of_a_borrowed_call_that_is_the_last_user(
+    client, gateway, tracking, platform
+):
+    response = make_order_status_response()
+    gateway.respond(body=response)
+    http = client._http_client
+    original = http._attempts
+
+    async def holder_leaves_first(*args, **kwargs):
+        await client.__aexit__(None, None, None)  # the call becomes the last user
+        return await original(*args, **kwargs)
+
+    await client.__aenter__()
+    http._attempts = holder_leaves_first
+    tracking.close_error = RuntimeError(generate_readable_string(12))
+
+    status = await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert status.status == response["status"]
+    assert tracking.closed == 1
+    assert http._in_flight == 0 and http._client is None
+
+
+@pytest.mark.asyncio
+async def test_the_count_of_calls_is_balanced_when_a_borrowed_call_fails(gateway, tracking):
+    gateway.fail(httpx.ReadTimeout(generate_readable_string(8)))
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    async with http:
+        with pytest.raises(HttpClientError):
+            await http.get(any_path())
+        assert http._in_flight == 0
+        assert tracking.closed == 0
+
+    assert tracking.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_the_count_of_calls_is_balanced_when_a_borrowed_call_is_cancelled_and_the_client_is_closed(
+    gateway, tracking, monkeypatch
+):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    started = asyncio.Event()
+
+    async def never_ends(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    await http.__aenter__()
+    monkeypatch.setattr(http, "_attempts", never_ends)
+    call = asyncio.create_task(http.get(any_path()))
+    await started.wait()
+    await http.__aexit__(None, None, None)  # the call is the last user
+    assert tracking.closed == 0
+
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert http._in_flight == 0
+    assert tracking.closed == 1  # the cancelled call still closed the client (the close is shielded)
+
+
+@pytest.mark.asyncio
+async def test_calls_outside_async_with_while_another_task_holds_it_share_the_client_and_it_is_closed_once(gateway, tracking):
+    gateway.respond(body=make_order_status_response())
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def holder():
+        async with http:
+            entered.set()
+            await release.wait()
+
+    async def borrower():
+        await entered.wait()
+        await http.get(any_path())
+        await asyncio.sleep(0)
+        await http.get(any_path())
+
+    holding = asyncio.create_task(holder())
+    borrowers = [asyncio.create_task(borrower()) for _ in range(3)]
+    await entered.wait()
+    await asyncio.gather(*borrowers)
+    assert tracking.closed == 0
+    release.set()
+    await holding
+
+    assert tracking.built == 1
+    assert tracking.closed == 1
+    assert http._in_flight == 0
 
 
 @pytest.mark.asyncio
@@ -959,7 +1081,9 @@ async def test_a_header_value_httpx_can_send_is_sent(gateway, make_value):
 async def test_invalid_arguments_are_typed_and_still_value_errors(client, gateway, platform):
     async with client:
         with pytest.raises(InvalidArgumentError) as exc:
-            await client.refund_session(uuid4(), platform.platform_id, platform.secret_key, generate_readable_string(2))
+            await client.refund_session(
+                uuid4(), platform.platform_id, platform.secret_key, generate_readable_string(REFUND_REASON_MIN_LENGTH - 1)
+            )
 
     assert isinstance(exc.value, ValueError)
     assert not isinstance(exc.value, ConfigurationError)

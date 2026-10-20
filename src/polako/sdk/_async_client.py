@@ -6,6 +6,7 @@ import re
 import ssl
 from typing import Any, Dict, Iterator, Literal, Optional, Type, TypeVar, Union
 
+import anyio
 import httpx
 
 from polako.sdk._exceptions import (
@@ -130,6 +131,9 @@ RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProt
 # What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
 # aborted, refused or broken, a timeout of the system.
 _TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError)
+# What anyio raises for a stream that was cut, when the httpcore in use does not map it to an error of its own (httpcore
+# before 1.0.5 maps neither the end of the stream during the handshake nor all broken streams).
+_CUT_STREAM_ERRORS = (anyio.EndOfStream, anyio.BrokenResourceError)
 # TLS failures that a repeat cures. The ``reason`` code is matched, not the text of the message, and only what is
 # named is retried, so that a code the running Python does not know (its table of reasons is the one it was built
 # with, and an unknown code has ``reason`` None) is never retried by mistake.
@@ -139,8 +143,19 @@ _TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError)
 #    a key that is too small, a peer or a proxy that answers in plain text) is a deterministic fault of the setup, and
 #    a repeat gives the same result.
 _CUT_CONNECTION_ERRORS = (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError)
+# Defensive: CPython raises this reason as SSLEOFError, but a plain SSLError that carries it is the same event.
+_CUT_CONNECTION_REASONS = frozenset({"UNEXPECTED_EOF_WHILE_READING"})
+
+
+def _is_cut_connection(error: ssl.SSLError) -> bool:
+    return isinstance(error, _CUT_CONNECTION_ERRORS) or getattr(error, "reason", None) in _CUT_CONNECTION_REASONS
+
+
 # 2. On an established connection a TLS error reaches the SDK as it is, unwrapped (anyio re-raises it and httpcore
-#    has no mapping for it). There a damaged record or an alert in the middle of a stream is also cured by a repeat.
+#    has no mapping for it). There a damaged record is also cured by a repeat. The alerts that a server sends for a
+#    message it cannot decode or did not expect (SSLV3_ALERT_UNEXPECTED_MESSAGE, TLSV1_ALERT_DECODE_ERROR) are not on
+#    the list: under TLS 1.3 the handshake is finished for the client before the server judges its last flight, so such
+#    a rejection also arrives unwrapped, on the first read, and a repeat gives the same result.
 _DAMAGED_RECORD_REASONS = frozenset(
     {
         "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
@@ -152,8 +167,6 @@ _DAMAGED_RECORD_REASONS = frozenset(
         "BAD_LENGTH",
         "PACKET_LENGTH_TOO_LONG",
         "APPLICATION_DATA_AFTER_CLOSE_NOTIFY",
-        "SSLV3_ALERT_UNEXPECTED_MESSAGE",
-        "TLSV1_ALERT_DECODE_ERROR",
     }
 )
 
@@ -166,16 +179,26 @@ def _is_retryable_error(error: BaseException) -> bool:
     cut. A TLS error that nothing wrapped comes from an established connection and is retried if the connection was
     cut or a record was damaged. Every other error is retried by its kind; this includes ``ReadError`` and
     ``WriteError``, which httpx raises for a stream that broke, and the end of a stream, which arrives as
-    ``RemoteProtocolError``."""
+    ``RemoteProtocolError``. A stream that anyio reports as cut (``EndOfStream``, ``BrokenResourceError``) and
+    that an older httpcore does not map is retried like one that httpx reports."""
     if isinstance(error, httpx.ConnectError):
         tls_error = next((link for link in _error_chain(error) if isinstance(link, ssl.SSLError)), None)
         if tls_error is not None:
-            return isinstance(tls_error, _CUT_CONNECTION_ERRORS)
+            return _is_cut_connection(tls_error)
     elif isinstance(error, ssl.SSLError):
-        return isinstance(error, _CUT_CONNECTION_ERRORS) or getattr(error, "reason", None) in _DAMAGED_RECORD_REASONS
+        return _is_cut_connection(error) or getattr(error, "reason", None) in _DAMAGED_RECORD_REASONS
     if isinstance(error, RETRYABLE_ERRORS):
         return True
-    return isinstance(error, _TRANSIENT_OS_ERRORS)
+    return isinstance(error, _TRANSIENT_OS_ERRORS + _CUT_STREAM_ERRORS)
+
+
+async def _close_quietly(client: httpx.AsyncClient) -> None:
+    """Close the client without letting an error of the close out. The close is shielded, so that a cancellation of the
+    caller does not cut it short; the cancellation itself still reaches the caller."""
+    try:
+        await asyncio.shield(client.aclose())
+    except Exception:  # noqa: BLE001 - the outcome of the call matters more than a failed close
+        pass
 
 
 class AsyncHttpClient:
@@ -275,11 +298,16 @@ class AsyncHttpClient:
         self._entered -= 1
         await self._close_if_unused()
 
-    async def _close_if_unused(self) -> None:
-        """Close the shared client once no ``async with`` is open and no call is using it."""
+    async def _close_if_unused(self, quiet: bool = False) -> None:
+        """Close the shared client once no ``async with`` is open and no call is using it. A call that is the last user
+        closes it ``quiet``ly: a failure of the close must not replace the outcome of the call (a subscription that was
+        created), and a cancellation of the call must not leave the connections open."""
         if self._entered == 0 and self._in_flight == 0 and self._client is not None:
             client, self._client = self._client, None
-            await client.aclose()
+            if quiet:
+                await _close_quietly(client)
+            else:
+                await client.aclose()
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""
@@ -419,10 +447,10 @@ class AsyncHttpClient:
             return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
         finally:
             if owned:
-                await client.aclose()
+                await _close_quietly(client)
             else:
                 self._in_flight -= 1
-                await self._close_if_unused()
+                await self._close_if_unused(quiet=True)
 
     async def _attempts(
         self,
@@ -441,7 +469,7 @@ class AsyncHttpClient:
                 is_last = attempt == max_attempts
                 try:
                     response = await self._send(client, method, url, json_body, request_headers, params)
-                except (httpx.RequestError, OSError) as e:
+                except (httpx.RequestError, OSError, *_CUT_STREAM_ERRORS) as e:
                     if is_last or not _is_retryable_error(e):
                         raise HttpClientError(f"Request failed: {_describe_network_error(e)}{_after_attempts(attempt)}") from e
                     await _sleep(self._backoff(attempt))

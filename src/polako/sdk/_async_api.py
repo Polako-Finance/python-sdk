@@ -6,7 +6,12 @@ from typing import Dict, Iterable, List, Optional, TypeVar, Union
 from uuid import UUID, uuid4
 
 from polako.sdk._async_client import AsyncHttpClient, is_sendable_header_value
-from polako.sdk._constants import BillingInterval, SubscriptionStatus
+from polako.sdk._constants import (
+    REFUND_REASON_MAX_LENGTH,
+    REFUND_REASON_MIN_LENGTH,
+    BillingInterval,
+    SubscriptionStatus,
+)
 from polako.sdk._exceptions import ConfigurationError, InvalidArgumentError, InvalidHeaderValueError
 from polako.sdk._order import (
     CheckStatusRequest,
@@ -90,7 +95,11 @@ class AsyncPolakoClient:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit async context manager."""
+        """Exit async context manager.
+
+        Raises:
+            RuntimeError: If the client is exited more often than it was entered (0.2.0 did nothing then)
+        """
         await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
 
     async def create_order(
@@ -241,7 +250,7 @@ class AsyncPolakoClient:
             session_id: Payment session UUID to refund
             platform_id: Platform identifier UUID for authentication
             secret_key: Secret key used for generating request signature
-            reason: Reason for the refund (3-255 characters)
+            reason: Reason for the refund (REFUND_REASON_MIN_LENGTH to REFUND_REASON_MAX_LENGTH characters, now 3 to 255)
             refund_items: Optional list of RefundItem for partial refund.
                           If None, all remaining items are refunded.
 
@@ -253,10 +262,10 @@ class AsyncPolakoClient:
             HttpRequestError: If the API request fails
             HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
-        if not reason or len(reason) < 3:
-            raise InvalidArgumentError("'reason' must be at least 3 characters")
-        if len(reason) > 255:
-            raise InvalidArgumentError("'reason' must be at most 255 characters")
+        if not reason or len(reason) < REFUND_REASON_MIN_LENGTH:
+            raise InvalidArgumentError(f"'reason' must be at least {REFUND_REASON_MIN_LENGTH} characters")
+        if len(reason) > REFUND_REASON_MAX_LENGTH:
+            raise InvalidArgumentError(f"'reason' must be at most {REFUND_REASON_MAX_LENGTH} characters")
         if refund_items is not None and len(refund_items) == 0:
             raise InvalidArgumentError("'refund_items' must not be empty; pass None for a full refund")
 

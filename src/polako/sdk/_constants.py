@@ -46,6 +46,10 @@ class ChargeAttemptStatus(str, Enum):
     FAILED = "failed"  # declined or errored; retries, if any, are the server's
 
 
+# Length of the reason of a refund, in characters (the limits of the gateway)
+REFUND_REASON_MIN_LENGTH = 3
+REFUND_REASON_MAX_LENGTH = 255
+
 # API base URLs
 BASE_URL_PROD = "https://api.infra.polako-finance.com"
 BASE_URL_TEST = "https://stg-api.infra.polako-finance.com"

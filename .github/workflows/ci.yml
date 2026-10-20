@@ -83,8 +83,16 @@ jobs:
     - name: Install the oldest supported httpx
       run: poetry -C tests run python -m pip install "httpx[http2]==0.25.0"
 
-    - name: Check which httpx the tests will import
-      run: poetry -C tests run python -c "import httpx; assert httpx.__version__ == '0.25.0', httpx.__version__"
+    # httpx 0.25.0 requires httpcore 0.18, so pip replaces the httpcore and h11 of the lock file: the job tests the
+    # transport of the floor, not the locked one. The versions are printed and checked so that this stays visible.
+    - name: Check which httpx, httpcore and h11 the tests will import
+      run: |
+        poetry -C tests run python -c "
+        import httpx, httpcore, h11
+        print('httpx', httpx.__version__, 'httpcore', httpcore.__version__, 'h11', h11.__version__)
+        assert httpx.__version__ == '0.25.0', httpx.__version__
+        assert httpcore.__version__.startswith('0.18'), httpcore.__version__
+        "
 
     - name: Run tests
       run: poetry -C tests run pytest -v
