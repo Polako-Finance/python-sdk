@@ -269,6 +269,8 @@ class AsyncPolakoClient:
             HttpRequestError: If the API request fails
             HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
+        if not isinstance(reason, str):
+            raise InvalidArgumentError(f"'reason' must be a string, got {type(reason).__name__}")
         if not reason or len(reason) < REFUND_REASON_MIN_LENGTH:
             raise InvalidArgumentError(f"'reason' must be at least {REFUND_REASON_MIN_LENGTH} characters")
         if len(reason) > REFUND_REASON_MAX_LENGTH:

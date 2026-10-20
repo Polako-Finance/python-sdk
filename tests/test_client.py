@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import ssl
 import sys
 import warnings
@@ -28,6 +29,7 @@ from polako.sdk._async_client import (
     AsyncHttpClient,
     _AcloseWatch,
     _is_sdk_module,
+    _stacklevel_outside_sdk,
 )
 from polako.sdk._constants import REFUND_REASON_MAX_LENGTH, REFUND_REASON_MIN_LENGTH
 from tests.factories import (
@@ -48,9 +50,12 @@ from tests.factories import (
 )
 from tests.generators import (
     WAIT_LIMIT_SECONDS,
+    generate_attempt_count,
+    generate_final_error_status,
     generate_random_host,
     generate_random_int,
     generate_readable_string,
+    generate_retryable_status,
     generate_short_timeout,
 )
 
@@ -460,7 +465,7 @@ async def test_an_error_of_httpx_with_no_tls_error_behind_it_is_retried_by_its_k
 async def test_a_failure_to_set_up_the_client_outside_async_with_is_not_retried(monkeypatch, sleeps):
     # A malformed SSL_CERT_FILE: httpx reads the certificates when it builds the client.
     built = []
-    error = tls_error("NO_CERTIFICATE_OR_CRL_FOUND", generate_readable_string(12))
+    error = tls_error(random.choice(PERMANENT_TLS_REASONS), generate_readable_string(12))
 
     def broken(*args, **kwargs):
         built.append(1)
@@ -1392,7 +1397,7 @@ async def test_a_close_that_hangs_at_the_exit_of_async_with_is_bounded(gateway, 
 @pytest.mark.parametrize("length", [REFUND_REASON_MIN_LENGTH, REFUND_REASON_MAX_LENGTH])
 async def test_a_refund_reason_of_exactly_the_limit_is_accepted(client, gateway, platform, length):
     session_id = uuid4()
-    gateway.respond(body=make_refund_response(session_id=str(session_id), session_status="REFUNDED"))
+    gateway.respond(body=make_refund_response(session_id=str(session_id)))
     reason = generate_readable_string(length)
 
     async with client:
@@ -1502,43 +1507,83 @@ async def test_one_client_serves_all_attempts_outside_async_with(gateway, sleeps
 @pytest.mark.asyncio
 async def test_the_message_of_a_retried_request_says_how_many_attempts_were_made(gateway, sleeps):
     gateway.fail(httpx.ReadTimeout(""))
+    attempts = generate_attempt_count()
 
-    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=3) as http:
+    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=attempts) as http:
         with pytest.raises(HttpClientError) as exc:
             await http.post(any_path(), request_body=any_body(), headers=keyed())
 
-    assert exc.value.message == "Request failed: ReadTimeout (after 3 attempts; the message is about the last one)"
+    assert exc.value.message == f"Request failed: ReadTimeout (after {attempts} attempts; the message is about the last one)"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("status", [generate_retryable_status(), generate_retryable_status()])
 async def test_the_message_of_an_answer_after_retries_says_how_many_attempts_were_made(gateway, sleeps, status):
     detail = generate_readable_string(12)
     gateway.respond(status=status, text=detail)
+    attempts = generate_attempt_count()
 
-    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=3) as http:
+    async with AsyncHttpClient(f"https://{generate_random_host()}", max_attempts=attempts) as http:
         with pytest.raises(HttpRequestError) as exc:
             await http.post(any_path(), request_body=any_body(), headers=keyed())
 
     assert exc.value.message == (
-        f"HTTP request failed with status {status}: {detail} (after 3 attempts; the message is about the last one)"
+        f"HTTP request failed with status {status}: {detail} (after {attempts} attempts; the message is about the last one)"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_after_a_retry_says_how_many_attempts_were_made(gateway, sleeps):
+    text = generate_readable_string(12)
+    failures = [httpx.ReadTimeout(generate_readable_string(8)), TypeError(text)]
+    gateway.sequence(*failures)
+
+    async with AsyncHttpClient(f"https://{generate_random_host()}") as http:
+        with pytest.raises(HttpRequestError) as exc:
+            await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert exc.value.message == (
+        f"Unexpected error during request: TypeError: {text} "
+        f"(after {len(failures)} attempts; the message is about the last one)"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [generate_random_int(), None, generate_readable_string(8).encode("ascii")])
+async def test_a_refund_reason_that_is_not_a_string_is_an_invalid_argument(client, gateway, platform, reason):
+    async with client:
+        with pytest.raises(InvalidArgumentError, match="must be a string"):
+            await client.refund_session(uuid4(), platform.platform_id, platform.secret_key, reason)
+
+    assert gateway.requests == []
+
+
+def test_the_warning_looks_past_the_frames_of_asyncio_for_the_code_of_the_merchant():
+    # merchant -> asyncio -> SDK -> the helper: the first frame outside both is the merchant's, three levels up.
+    sdk_side = {"__name__": f"{sdk.__name__}.fake", "helper": _stacklevel_outside_sdk}
+    exec("def inside():\n    return helper()", sdk_side)
+    loop_side = {"__name__": "asyncio.fake"}
+    exec("def run(callback):\n    return callback()", loop_side)
+
+    assert loop_side["run"](sdk_side["inside"]) == 3
+    assert sdk_side["inside"]() == 2  # without the event loop in between
 
 
 @pytest.mark.asyncio
 async def test_the_message_of_an_answer_to_a_single_attempt_has_no_attempt_count(client, gateway):
     detail = generate_readable_string(12)
-    gateway.respond(status=404, text=detail)
+    status = generate_final_error_status()
+    gateway.respond(status=status, text=detail)
 
     async with client:
         with pytest.raises(HttpRequestError) as exc:
             await client.get_session_details(uuid4())
 
-    assert exc.value.message == f"HTTP request failed with status 404: {detail}"
+    assert exc.value.message == f"HTTP request failed with status {status}: {detail}"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [404, 502])
+@pytest.mark.parametrize("status", [generate_final_error_status(), generate_retryable_status()])
 async def test_an_error_answer_with_an_empty_body_does_not_end_after_the_colon(client, gateway, status):
     gateway.respond(status=status, text="")
 

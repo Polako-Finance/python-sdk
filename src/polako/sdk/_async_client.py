@@ -207,11 +207,16 @@ def _is_sdk_module(name: str) -> bool:
     return name == "polako.sdk" or name.startswith("polako.sdk.")
 
 
+def _is_sdk_or_asyncio_module(name: str) -> bool:
+    return _is_sdk_module(name) or name == "asyncio" or name.startswith("asyncio.")
+
+
 def _stacklevel_outside_sdk() -> int:
     """The ``stacklevel`` for ``warnings.warn``, called from the function that calls this one, that points at the first
-    frame outside the SDK: the code of the merchant that made the mistake, not the SDK's own ``__aexit__``."""
+    frame outside the SDK and outside asyncio: the code of the merchant that made the mistake, not the SDK's own
+    ``__aexit__`` or the event loop that started it."""
     level, frame = 1, sys._getframe(1)
-    while frame is not None and _is_sdk_module(frame.f_globals.get("__name__", "")):
+    while frame is not None and _is_sdk_or_asyncio_module(frame.f_globals.get("__name__", "")):
         frame, level = frame.f_back, level + 1
     return level
 
@@ -642,6 +647,7 @@ class AsyncHttpClient:
         max_attempts: int,
     ) -> Optional[T]:
         """Send the request, up to ``max_attempts`` times, and turn the outcome into a result or an error."""
+        attempt = 1
         try:
             for attempt in range(1, max_attempts + 1):
                 is_last = attempt == max_attempts
@@ -667,7 +673,9 @@ class AsyncHttpClient:
         except HttpClientError:
             raise
         except Exception as e:
-            raise HttpRequestError(f"Unexpected error during request: {_describe_network_error(e)}") from e
+            raise HttpRequestError(
+                f"Unexpected error during request: {_describe_network_error(e)}{_after_attempts(attempt)}"
+            ) from e
 
     @staticmethod
     def _has_idempotency_key(headers: Dict[str, str]) -> bool:

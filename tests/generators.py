@@ -86,3 +86,18 @@ WAIT_LIMIT_SECONDS = 5  # the longest a test waits for something to happen befor
 def generate_random_int() -> int:
     """A large integer, for a test that needs a value that is not a string."""
     return random.randint(10**8, 10**9)
+
+
+def generate_attempt_count() -> int:
+    """A number of attempts of a retried request: at least two, so that a retry happens."""
+    return random.randint(2, 4)
+
+
+def generate_retryable_status() -> int:
+    """The HTTP status of an answer that the SDK retries."""
+    return random.choice((429, 500, 502, 503, 504))
+
+
+def generate_final_error_status() -> int:
+    """The HTTP status of an error answer that the SDK does not retry."""
+    return random.choice((400, 401, 403, 404, 409, 422))
