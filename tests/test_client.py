@@ -885,7 +885,7 @@ async def test_the_task_that_runs_aclose_is_kept_after_the_sdk_gave_up_until_it_
     with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
         await http.__aexit__(None, None, None)  # gives up at the deadline
 
-    assert "timed out" in caplog.text and "by the client itself" not in caplog.text  # the SDK's own cancel: one line
+    assert "timed out" in caplog.text
     assert len(http._closing) == 1  # the aclose task is still held, though nobody waits for it
     survive.set()
     await until(lambda: not http._closing)
@@ -912,6 +912,58 @@ async def test_an_aclose_that_survives_the_cancellation_is_held_only_for_a_while
     await until(lambda: tracking.completed == 1)
 
 
+def outer_close_tasks(http):
+    """The tasks that wait for aclose (not the ones that run it)."""
+    return [task for task in http._closing if task.get_coro().__name__ == "_close_with_timeout"]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_task_that_waits_logs_once_and_holds_the_aclose_that_survives(
+    gateway, tracking, monkeypatch, caplog
+):
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set
+    survive = tracking.survive_gate = asyncio.Event()
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", generate_short_timeout())
+    await http.__aenter__()
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        closing = asyncio.create_task(http.__aexit__(None, None, None))
+        await until(lambda: tracking.closed == 1 and outer_close_tasks(http))
+        for task in outer_close_tasks(http):
+            task.cancel()  # shutdown code that cancels the close task; aclose is not touched by it
+        await closing
+        await until(lambda: "stops holding it" in caplog.text)  # the hold was scheduled by the give-up of this path
+
+    assert caplog.text.count("was cancelled before it ended") == 1
+    assert "although the SDK did not cancel it" not in caplog.text  # the SDK cancelled aclose, so it is not logged again
+    survive.set()
+    await until(lambda: tracking.completed == 1)
+
+
+@pytest.mark.asyncio
+async def test_the_hold_timer_is_cancelled_when_aclose_ends(gateway, tracking, monkeypatch):
+    loop = asyncio.get_running_loop()
+    timers = []
+    original = loop.call_later
+
+    def recording(*args, **kwargs):
+        timers.append(original(*args, **kwargs))
+        return timers[-1]
+
+    monkeypatch.setattr(loop, "call_later", recording)
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    tracking.close_gate = asyncio.Event()  # never set: the cancellation of the deadline ends aclose at once
+    await http.__aenter__()
+
+    await http.__aexit__(None, None, None)
+    await until(lambda: not http._closing)
+
+    hold = [timer for timer in timers if timer.when() - loop.time() > WAIT_LIMIT_SECONDS / 2 or timer.cancelled()]
+    assert hold and all(timer.cancelled() for timer in hold)  # no timer is left to keep a finished task alive
+
+
 @pytest.mark.asyncio
 async def test_an_aclose_that_ends_cancelled_on_its_own_is_logged(gateway, tracking, caplog):
     http = AsyncHttpClient(f"https://{generate_random_host()}")
@@ -922,7 +974,7 @@ async def test_an_aclose_that_ends_cancelled_on_its_own_is_logged(gateway, track
         await http.__aexit__(None, None, None)
         await until(lambda: not http._closing)
 
-    assert "cancelled by the client itself" in caplog.text
+    assert "although the SDK did not cancel it" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1059,7 +1111,7 @@ async def test_a_close_that_hangs_is_bounded_and_logged_and_the_call_returns_its
 
     assert status.status == response["status"]
     assert "timed out" in caplog.text and "may stay open" in caplog.text
-    assert "by the client itself" not in caplog.text  # the SDK cancelled it, and said so once
+    assert "although the SDK did not cancel it" not in caplog.text  # the SDK cancelled it, and said so once
 
 
 @pytest.mark.asyncio
