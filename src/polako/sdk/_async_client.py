@@ -28,6 +28,14 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     return seconds if seconds >= 0 else None
 
 
+def _describe_network_error(error: httpx.RequestError) -> str:
+    """The failure's class and text. httpx raises a refused connection and the timeouts with an empty text, so the
+    class name is what says what happened; the original error stays available as ``__cause__``."""
+    text = str(error).strip()
+    name = type(error).__name__
+    return f"{name}: {text}" if text else name
+
+
 # A repeat can cure these: the gateway was busy or restarting, or the network broke on the way.
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
@@ -220,7 +228,7 @@ class AsyncHttpClient:
                     response = await self._send(method, url, json_body, request_headers, params)
                 except httpx.RequestError as e:
                     if is_last or not isinstance(e, RETRYABLE_ERRORS):
-                        raise HttpClientError(f"Network error during request: {e}") from e
+                        raise HttpClientError(f"Network error during request: {_describe_network_error(e)}") from e
                     await _sleep(self._backoff(attempt))
                     continue
 

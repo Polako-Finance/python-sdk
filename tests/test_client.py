@@ -180,6 +180,34 @@ async def test_network_error_is_client_error_not_request_error(client, gateway):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_class", [httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError])
+async def test_network_error_message_names_the_failure_even_when_httpx_gives_no_text(client, gateway, error_class):
+    # httpx raises ConnectError and the timeouts with an empty text on a refused connection or a slow server:
+    # the message must still say what happened, not end after the colon.
+    gateway.fail(error_class(""))
+
+    async with client:
+        with pytest.raises(HttpClientError) as exc:
+            await client.get_session_details(uuid4())
+
+    assert error_class.__name__ in exc.value.message
+    assert not exc.value.message.rstrip().endswith(":")
+
+
+@pytest.mark.asyncio
+async def test_network_error_message_keeps_the_text_httpx_gave(client, gateway):
+    text = generate_readable_string(12)
+    gateway.fail(httpx.ConnectError(text))
+
+    async with client:
+        with pytest.raises(HttpClientError) as exc:
+            await client.get_session_details(uuid4())
+
+    assert httpx.ConnectError.__name__ in exc.value.message
+    assert text in exc.value.message
+
+
+@pytest.mark.asyncio
 async def test_works_without_context_manager(client, gateway, platform):
     response = make_order_status_response()
     gateway.respond(body=response)

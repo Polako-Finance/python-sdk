@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The message of the `HttpClientError` raised for a network failure now names the failure. A refused connection and the timeouts come from `httpx` with an empty text, so the message used to end after the colon (`Network error during request: `); it is now `Network error during request: ConnectError` (or `ConnectError: <text>` when `httpx` gives one). The original error is still `__cause__`.
+
 ## [0.2.0] - 2026-10-12
 
 ### Added
