@@ -223,9 +223,15 @@ def _keep(task: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
 
 
 class _CloseAttempt:
-    """Whether the task that closes a client got as far as calling ``aclose``."""
+    """Whether ``aclose`` actually ran: set inside the task that runs it (see ``_run_aclose``), not when the task is
+    created, because a task that is cancelled before its first step never runs its coroutine."""
 
     started = False
+
+
+async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None:
+    attempt.started = True
+    await client.aclose()
 
 
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
@@ -292,8 +298,7 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     cancels both. A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see
     ``_close``); the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself
     reports ``Task was destroyed but it is pending``."""
-    attempt.started = True
-    closing = asyncio.ensure_future(client.aclose())
+    closing = asyncio.ensure_future(_run_aclose(client, attempt))
     watch = _AcloseWatch(closing, keep)
     try:
         done, _ = await asyncio.wait({closing}, timeout=CLOSE_TIMEOUT)

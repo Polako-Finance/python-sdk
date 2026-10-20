@@ -832,11 +832,12 @@ async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_
     gateway, tracking, monkeypatch
 ):
     # The caller is cancelled `steps` turns of the event loop after the close task. How many turns lie between the two
-    # differs between Python versions (how many tasks `wait_for` and the like put between), and from some turn on the
-    # call has already returned. So all the distances are tried in one test, and the test requires that at least one of
-    # them cancelled a call that had not returned yet: on a version where none does, it fails instead of passing empty.
+    # differs between Python versions, and from some turn on the call has already returned. So the distances are tried
+    # in one test. Distance 0 always cancels a call that has not returned (the caller is still suspended), so it proves
+    # nothing about the window; the test requires a hit at a distance of 1 or more, which is the window after the close
+    # task has ended. On the versions probed (3.10, 3.12, 3.13) distances 1 and 2 hit, and 3 and above return first.
     hits = 0
-    for steps in range(6):
+    for steps in range(5):
         tracking.closed = 0
         http = AsyncHttpClient(f"https://{generate_random_host()}")
         tracking.close_gate = asyncio.Event()  # never set
@@ -858,7 +859,7 @@ async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_
             with pytest.raises(asyncio.CancelledError):
                 await call
             assert call.cancelled()
-            hits += 1
+            hits += 1 if steps >= 1 else 0
 
     assert hits >= 1
 
@@ -1068,6 +1069,32 @@ async def test_a_failure_of_aclose_that_comes_after_the_sdk_gave_up_is_still_log
     with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
         await http.__aexit__(None, None, None)
         await until(lambda: f"Closing the HTTP client failed: OSError: {text}" in caplog.text)
+
+
+@pytest.mark.asyncio
+async def test_a_close_task_that_ran_its_first_step_but_whose_aclose_did_not_is_logged_as_never_attempted(
+    gateway, tracking, caplog
+):
+    # What `asyncio.run` does at its end, one turn later than the test above: the close task has begun to wait, the
+    # task that runs aclose has been created but has not stepped, and every task is cancelled in one go.
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+    await http.__aenter__()
+    client = http._client
+    http._client = None  # the exit below would close it; here `_close` is called by hand
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        caller = asyncio.ensure_future(http._close(client))
+        await asyncio.sleep(0)  # `_close` has created the close task
+        await asyncio.sleep(0)  # the close task has stepped: it waits; the aclose task has not
+        assert len(http._closing) == 2 and tracking.closed == 0
+        for task in list(http._closing):
+            task.cancel()
+        await caller
+        await until(lambda: not http._closing)
+
+    assert "was cancelled before it started; no close was attempted" in caplog.text
+    assert "was cancelled before it ended" not in caplog.text
+    assert tracking.closed == 0  # aclose never ran
 
 
 @pytest.mark.asyncio
