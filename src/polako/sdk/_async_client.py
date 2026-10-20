@@ -86,15 +86,22 @@ def _describe_network_error(error: BaseException) -> str:
     return _with_detail(name, text)
 
 
+def _ascii_text(value: Any) -> Optional[str]:
+    """The text of a header name or value: a ``str`` as it is, ``bytes`` decoded as ASCII; ``None`` for anything else
+    (another type, or bytes that are not ASCII)."""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    return value if isinstance(value, str) else None
+
+
 def is_sendable_header_value(value: Union[str, bytes]) -> bool:
     """Printable ASCII (a tab inside is allowed) without whitespace at either end: anything else is refused by the
     HTTP layer. ``bytes`` is judged by its ASCII text; any other type cannot be sent."""
-    if isinstance(value, bytes):
-        try:
-            value = value.decode("ascii")
-        except UnicodeDecodeError:
-            return False
-    if not isinstance(value, str):
+    value = _ascii_text(value)
+    if value is None:
         return False
     return value.isascii() and all(c.isprintable() or c == "\t" for c in value) and value == value.strip()
 
@@ -105,12 +112,8 @@ _HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
 
 def _is_sendable_header_name(name: Union[str, bytes]) -> bool:
     """A non-empty token of ASCII letters, digits and ``!#$%&'*+-.^_`|~``, as text or as bytes."""
-    if isinstance(name, bytes):
-        try:
-            name = name.decode("ascii")
-        except UnicodeDecodeError:
-            return False
-    return isinstance(name, str) and _HEADER_NAME.fullmatch(name) is not None
+    name = _ascii_text(name)
+    return name is not None and _HEADER_NAME.fullmatch(name) is not None
 
 
 def _check_header_values(headers: Dict[str, str]) -> None:

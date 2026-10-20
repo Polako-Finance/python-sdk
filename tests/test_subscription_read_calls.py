@@ -11,7 +11,6 @@ from polako.sdk import (
     ConfigurationError,
     HttpClientError,
     HttpRequestError,
-    NotFoundError,
     PolakoClient,
     SubscriptionDetails,
     SubscriptionPage,
@@ -20,7 +19,13 @@ from polako.sdk import (
 )
 from tests.error_cases import STATUS_ERRORS
 from tests.factories import make_credentials, make_subscription_detail_payload, make_subscription_page_payload
-from tests.generators import generate_aware_datetime, generate_random_int, generate_readable_string, generate_recent_date
+from tests.generators import (
+    generate_aware_datetime,
+    generate_final_error_status,
+    generate_random_int,
+    generate_readable_string,
+    generate_recent_date,
+)
 
 
 class Call(NamedTuple):
@@ -104,8 +109,14 @@ async def test_each_failure_status_is_its_own_error(gateway, subscription_client
 @pytest.mark.asyncio
 @pytest.mark.parametrize("call", CALLS)
 async def test_the_api_key_never_appears_in_an_error(gateway, subscription_client, credentials, call):
-    with pytest.raises(NotFoundError) as caught:
-        await run(gateway, subscription_client, call, status=404, body={"detail": generate_readable_string(8)})
+    with pytest.raises(HttpRequestError) as caught:
+        await run(
+            gateway,
+            subscription_client,
+            call,
+            status=generate_final_error_status(),
+            body={"detail": generate_readable_string(8)},
+        )
 
     assert credentials.api_key not in str(caught.value) and credentials.api_key not in repr(caught.value)
 

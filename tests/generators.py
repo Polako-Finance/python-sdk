@@ -93,9 +93,19 @@ def generate_attempt_count() -> int:
     return random.randint(2, 4)
 
 
+def generate_rate_limit_status() -> int:
+    """The HTTP status of a rate limit answer: the SDK retries it and raises `RateLimitedError`."""
+    return 429
+
+
+def generate_server_error_status() -> int:
+    """The HTTP status of a server error that the SDK retries and raises as `ServerError`."""
+    return random.choice((500, 502, 503, 504))
+
+
 def generate_retryable_status() -> int:
     """The HTTP status of an answer that the SDK retries."""
-    return random.choice((429, 500, 502, 503, 504))
+    return random.choice((generate_rate_limit_status(), generate_server_error_status()))
 
 
 def generate_final_error_status() -> int:

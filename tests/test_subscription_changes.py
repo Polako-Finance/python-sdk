@@ -7,14 +7,13 @@ import pytest
 
 from polako.sdk import (
     ConfigurationError,
-    ConflictError,
     HttpClientError,
     HttpRequestError,
     PolakoClient,
 )
 from tests.error_cases import STATUS_ERRORS
 from tests.factories import make_credentials
-from tests.generators import generate_random_int, generate_readable_string
+from tests.generators import generate_final_error_status, generate_random_int, generate_readable_string
 
 ACTIONS = ["pause", "resume", "cancel"]
 EVERY_ACTION = pytest.mark.parametrize("action", ACTIONS)
@@ -123,8 +122,14 @@ async def test_each_failure_status_is_its_own_error_with_the_servers_reason(
 @pytest.mark.asyncio
 @EVERY_ACTION
 async def test_the_api_key_never_appears_in_an_error(gateway, subscription_client, credentials, action):
-    with pytest.raises(ConflictError) as caught:
-        await change(gateway, subscription_client, action, status=409, body={"detail": generate_readable_string(8)})
+    with pytest.raises(HttpRequestError) as caught:
+        await change(
+            gateway,
+            subscription_client,
+            action,
+            status=generate_final_error_status(),
+            body={"detail": generate_readable_string(8)},
+        )
 
     assert credentials.api_key not in str(caught.value) and credentials.api_key not in repr(caught.value)
 

@@ -54,8 +54,10 @@ from tests.generators import (
     generate_final_error_status,
     generate_random_host,
     generate_random_int,
+    generate_rate_limit_status,
     generate_readable_string,
     generate_retryable_status,
+    generate_server_error_status,
     generate_short_timeout,
 )
 
@@ -1517,7 +1519,7 @@ async def test_the_message_of_a_retried_request_says_how_many_attempts_were_made
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [generate_retryable_status(), generate_retryable_status()])
+@pytest.mark.parametrize("status", [generate_rate_limit_status(), generate_server_error_status()])
 async def test_the_message_of_an_answer_after_retries_says_how_many_attempts_were_made(gateway, sleeps, status):
     detail = generate_readable_string(12)
     gateway.respond(status=status, text=detail)

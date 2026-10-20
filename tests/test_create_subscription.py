@@ -34,7 +34,7 @@ from tests.factories import (
     make_subscribe_args,
     make_subscribe_response,
 )
-from tests.generators import generate_random_host, generate_readable_string
+from tests.generators import generate_random_host, generate_readable_string, generate_server_error_status
 
 UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
@@ -178,13 +178,14 @@ async def test_repeating_a_call_with_the_same_key_sends_the_same_key(gateway, cr
 
 @pytest.mark.asyncio
 async def test_persistent_server_error_gives_up_after_the_bounded_attempts(gateway, sleeps, subscription_client):
-    gateway.respond(status=502, body={"detail": generate_readable_string(12)})
+    status = generate_server_error_status()
+    gateway.respond(status=status, body={"detail": generate_readable_string(12)})
 
     async with subscription_client as client:
         with pytest.raises(ServerError) as exc:
             await client.create_subscription(**make_subscribe_args())
 
-    assert exc.value.status_code == 502
+    assert exc.value.status_code == status
     assert len(gateway.requests) == 3
 
 
