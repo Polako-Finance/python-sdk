@@ -288,8 +288,10 @@ it is `False` for them, because anyone who knows your URL could send such a noti
 | `ServerError` | 5xx | The gateway or the card processor failed |
 
 All of them are `HttpRequestError`s, so `except HttpRequestError` still catches every one. A network error is an
-`HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and so does an `api_key` that is not a string ("must be a string") or cannot be sent as a header (not printable ASCII, or whitespace at either end: a key read from a file often ends with a newline). An idempotency key that is blank or cannot be sent raises
+`HttpClientError`. A client without `company_id` or `api_key` raises `ConfigurationError` before sending anything, and so does an `api_key` that is not a string ("must be a string") or cannot be sent as a header (not printable ASCII, or whitespace at either end: a key read from a file often ends with a newline). An idempotency key that is blank, is neither a string nor a `UUID`, or cannot be sent raises
 `InvalidHeaderValueError` (a kind of `InvalidArgumentError`), and any other invalid argument is an `InvalidArgumentError`, before any request. All three are `ValueError`s, so `except ValueError` still catches them.
+
+The client is set up at `async with PolakoClient()`, not at a call: if `SSL_CERT_FILE` or `SSL_CERT_DIR` points to a file that is missing, unreadable or malformed, that line raises `HttpClientError` (`Client set-up failed: ...`). Keep it inside the `try` of your error handling, as in the example above.
 
 ### Managing a subscription
 

@@ -27,7 +27,7 @@ make build            # poetry build
 - **Formatting**: Black + isort (profile=black)
 - **Type checking**: mypy (Python 3.11 target)
 - **Async-first**: httpx with context manager pattern
-- **Tests**: data comes from `tests/generators.py` and `tests/factories.py` (`make_*(**overrides)` returns fresh randomized data, a test overrides only what it checks), no literals; dates from `now()`.
+- **Tests**: data comes from `tests/generators.py` and `tests/factories.py` (`make_*(**overrides)` returns fresh randomized data, a test overrides only what it checks), no literals, except values that are pinned on purpose: the real hosts of the environments, and the empty or zero value that is the case under test; dates from `now()`.
 
 ## Key Context
 

@@ -2,8 +2,10 @@
 
 import random
 import ssl
+from typing import Optional
 from uuid import uuid4
 
+import httpcore
 import httpx
 import pytest
 
@@ -274,21 +276,27 @@ async def test_an_unexpected_failure_with_no_text_does_not_borrow_the_text_of_an
     assert exc.value.message == "Unexpected error during request: TypeError"
 
 
-def tls_error(reason: str, text: str) -> ssl.SSLError:
-    """An ssl.SSLError the way OpenSSL raises it: the code is in `reason` and in the text."""
-    error = ssl.SSLError(f"[SSL: {reason}] {text}")
+def tls_error(reason: Optional[str], text: str) -> ssl.SSLError:
+    """An ssl.SSLError the way OpenSSL raises it: the code is in `reason` and in the text (none for a code that the
+    running Python does not know)."""
+    error = ssl.SSLError(f"[SSL: {reason}] {text}" if reason else text)
     error.reason = reason  # type: ignore[attr-defined]
     return error
+
+
+def tls(reason: str, **params):
+    return pytest.param(lambda text: tls_error(reason, text), id=reason, **params)
 
 
 TRANSIENT_FAILURES = [
     pytest.param(lambda text: ssl.SSLEOFError(text), id="SSLEOFError"),
     pytest.param(lambda text: ssl.SSLZeroReturnError(text), id="SSLZeroReturnError"),
     pytest.param(lambda text: ssl.SSLSyscallError(text), id="SSLSyscallError"),
-    pytest.param(lambda text: tls_error("BAD_RECORD_MAC", text), id="BAD_RECORD_MAC"),
-    pytest.param(lambda text: tls_error("DECRYPTION_FAILED", text), id="DECRYPTION_FAILED"),
-    pytest.param(lambda text: tls_error("RECORD_LAYER_FAILURE", text), id="RECORD_LAYER_FAILURE"),
-    pytest.param(lambda text: tls_error("UNEXPECTED_RECORD", text), id="UNEXPECTED_RECORD"),
+    tls("DECRYPTION_FAILED_OR_BAD_RECORD_MAC"),
+    tls("DECRYPTION_FAILED"),
+    tls("BAD_RECORD_MAC"),
+    tls("RECORD_LAYER_FAILURE"),
+    tls("UNEXPECTED_RECORD"),
     pytest.param(lambda text: ConnectionResetError(text), id="ConnectionResetError"),
     pytest.param(lambda text: ConnectionAbortedError(text), id="ConnectionAbortedError"),
     pytest.param(lambda text: ConnectionRefusedError(text), id="ConnectionRefusedError"),
@@ -298,20 +306,33 @@ TRANSIENT_FAILURES = [
 
 PERMANENT_FAILURES = [
     pytest.param(lambda text: ssl.SSLCertVerificationError(text), id="SSLCertVerificationError"),
-    pytest.param(lambda text: tls_error("CERTIFICATE_VERIFY_FAILED", text), id="CERTIFICATE_VERIFY_FAILED"),
-    pytest.param(lambda text: tls_error("WRONG_VERSION_NUMBER", text), id="WRONG_VERSION_NUMBER"),
-    pytest.param(lambda text: tls_error("TLSV1_ALERT_PROTOCOL_VERSION", text), id="TLSV1_ALERT_PROTOCOL_VERSION"),
-    pytest.param(lambda text: tls_error("UNSUPPORTED_PROTOCOL", text), id="UNSUPPORTED_PROTOCOL"),
+    tls("CERTIFICATE_VERIFY_FAILED"),
+    tls("WRONG_VERSION_NUMBER"),
+    tls("TLSV1_ALERT_PROTOCOL_VERSION"),
+    tls("UNSUPPORTED_PROTOCOL"),
+    tls("SSLV3_ALERT_HANDSHAKE_FAILURE"),
+    tls("BAD_DH_VALUE"),
+    tls("NO_SHARED_CIPHER"),
+    tls("NO_CERTIFICATE_OR_CRL_FOUND"),
+    tls("EE_KEY_TOO_SMALL"),
+    pytest.param(lambda text: tls_error(generate_readable_string(10).upper(), text), id="made-up-reason"),
+    pytest.param(lambda text: tls_error(None, text), id="no-reason"),
     pytest.param(lambda text: FileNotFoundError(text), id="FileNotFoundError"),
     pytest.param(lambda text: PermissionError(text), id="PermissionError"),
 ]
 
 
 def wrapped_by_httpx(make_cause):
+    """The shape httpx really gives: httpx.ConnectError, caused by httpcore.ConnectError, which holds the original
+    error as the context that `raise ... from None` suppressed."""
+
     def make(text):
-        error = httpx.ConnectError("")
-        error.__cause__ = make_cause(text)
-        return error
+        inner = httpcore.ConnectError("")
+        inner.__context__ = make_cause(text)
+        inner.__suppress_context__ = True
+        outer = httpx.ConnectError("")
+        outer.__cause__ = inner
+        return outer
 
     return make
 
@@ -335,8 +356,12 @@ async def test_a_failure_that_httpx_does_not_wrap_is_a_client_error_not_a_gatewa
     "make_error",
     TRANSIENT_FAILURES
     + [
+        pytest.param(
+            wrapped_by_httpx(lambda text: tls_error("DECRYPTION_FAILED_OR_BAD_RECORD_MAC", text)), id="wrapped-BAD_MAC"
+        ),
         pytest.param(wrapped_by_httpx(lambda text: tls_error("RECORD_LAYER_FAILURE", text)), id="wrapped-RECORD_LAYER_FAILURE"),
         pytest.param(wrapped_by_httpx(lambda text: ssl.SSLSyscallError(text)), id="wrapped-SSLSyscallError"),
+        pytest.param(wrapped_by_httpx(lambda text: ConnectionResetError(text)), id="wrapped-ConnectionResetError"),
     ],
 )
 async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway, sleeps, make_error):
@@ -355,6 +380,10 @@ async def test_a_transient_failure_is_retried_when_the_request_is_keyed(gateway,
     + [
         pytest.param(wrapped_by_httpx(lambda text: ssl.SSLCertVerificationError(text)), id="wrapped-certificate"),
         pytest.param(wrapped_by_httpx(lambda text: tls_error("WRONG_VERSION_NUMBER", text)), id="wrapped-WRONG_VERSION_NUMBER"),
+        pytest.param(
+            wrapped_by_httpx(lambda text: tls_error("SSLV3_ALERT_HANDSHAKE_FAILURE", text)), id="wrapped-HANDSHAKE_FAILURE"
+        ),
+        pytest.param(wrapped_by_httpx(lambda text: tls_error(None, text)), id="wrapped-no-reason"),
     ],
 )
 async def test_a_permanent_failure_is_not_retried_even_when_the_request_is_keyed(gateway, sleeps, make_error):
@@ -365,6 +394,47 @@ async def test_a_permanent_failure_is_not_retried_even_when_the_request_is_keyed
             await http.post(any_path(), request_body=any_body(), headers=keyed())
 
     assert len(gateway.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failure_to_set_up_the_client_outside_async_with_is_not_retried(monkeypatch, sleeps):
+    # A malformed SSL_CERT_FILE: httpx reads the certificates when it builds the client.
+    built = []
+    error = tls_error("NO_CERTIFICATE_OR_CRL_FOUND", generate_readable_string(12))
+
+    def broken(*args, **kwargs):
+        built.append(1)
+        raise error
+
+    monkeypatch.setattr(httpx, "AsyncClient", broken)
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    with pytest.raises(HttpClientError) as exc:
+        await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert exc.value.message.startswith("Client set-up failed: SSLError")
+    assert exc.value.__cause__ is error
+    assert len(built) == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_one_client_serves_all_attempts_outside_async_with(gateway, sleeps, monkeypatch):
+    built = []
+    real = httpx.AsyncClient
+
+    def counting(*args, **kwargs):
+        built.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", counting)
+    gateway.sequence(httpx.ReadTimeout(""), httpx.ReadTimeout(""), {"status": 200, "body": {}})
+    http = AsyncHttpClient(f"https://{generate_random_host()}")
+
+    await http.post(any_path(), request_body=any_body(), headers=keyed())
+
+    assert len(gateway.requests) == 3
+    assert len(built) == 1
 
 
 @pytest.mark.asyncio

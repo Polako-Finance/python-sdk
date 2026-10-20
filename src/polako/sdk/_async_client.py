@@ -128,39 +128,39 @@ def _after_attempts(attempt: int) -> str:
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 # What the transport may raise without httpx wrapping it, when a repeat can cure it: a connection that was reset,
-# aborted, refused or broken, a timeout of the system, and a TLS failure other than the permanent ones below.
-_TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError, ssl.SSLError)
-# The TLS failures that a repeat cannot cure: the protocol version does not match, the certificate is not accepted.
-# The ``reason`` attribute of ``ssl.SSLError`` holds the code of OpenSSL; its text is not matched.
-_PERMANENT_TLS_REASONS = frozenset(
+# aborted, refused or broken, a timeout of the system.
+_TRANSIENT_OS_ERRORS = (ConnectionError, TimeoutError)
+# TLS failures that a repeat cures: the connection was cut, or a record was damaged on the way. Only these are
+# retried; any other TLS failure (a certificate, a protocol version, a cipher, a key that is too small, a bad
+# certificate file) gives the same result again and is raised at once. They are named, not left to a list of the
+# permanent ones, so that a code the running Python does not know (its table of reasons is the one it was built
+# with, and an unknown code has ``reason`` None) is never retried by mistake. The ``reason`` code is matched, not the
+# text of the message.
+_TRANSIENT_TLS_ERRORS = (ssl.SSLEOFError, ssl.SSLZeroReturnError, ssl.SSLSyscallError)
+_TRANSIENT_TLS_REASONS = frozenset(
     {
-        "WRONG_VERSION_NUMBER",
-        "UNSUPPORTED_PROTOCOL",
-        "TLSV1_ALERT_PROTOCOL_VERSION",
-        "NO_PROTOCOLS_AVAILABLE",
-        "UNKNOWN_PROTOCOL",
-        "WRONG_SSL_VERSION",
-        "VERSION_TOO_LOW",
-        "CERTIFICATE_VERIFY_FAILED",
-        "TLSV1_ALERT_UNKNOWN_CA",
-        "SSLV3_ALERT_BAD_CERTIFICATE",
+        "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
+        "DECRYPTION_FAILED",
+        "BAD_RECORD_MAC",
+        "SSLV3_ALERT_BAD_RECORD_MAC",
+        "RECORD_LAYER_FAILURE",
+        "UNEXPECTED_RECORD",
+        "TLSV1_ALERT_INTERNAL_ERROR",
     }
 )
 
 
-def _is_permanent_tls_error(error: BaseException) -> bool:
-    if isinstance(error, ssl.SSLCertVerificationError):
-        return True
-    return isinstance(error, ssl.SSLError) and getattr(error, "reason", None) in _PERMANENT_TLS_REASONS
+def _is_transient_tls_error(error: ssl.SSLError) -> bool:
+    return isinstance(error, _TRANSIENT_TLS_ERRORS) or getattr(error, "reason", None) in _TRANSIENT_TLS_REASONS
 
 
 def _is_retryable_error(error: BaseException) -> bool:
     """Whether a repeat can cure the failure. A repeat of a failure that is permanent gives the same result and spends
-    the rate limit, so these are not retried: a certificate that does not verify, a wrong protocol version, a failure
-    to set up the client (an unreadable certificate file). A TLS error on the chain of the error decides too, because
-    httpx wraps it."""
-    if any(_is_permanent_tls_error(link) for link in _error_chain(error)):
-        return False
+    the rate limit, so it is not retried. If a TLS error is on the chain of the error (httpx wraps it), it decides:
+    only a cut connection or a damaged record is retried. Otherwise the kind of the error decides."""
+    tls_error = next((link for link in _error_chain(error) if isinstance(link, ssl.SSLError)), None)
+    if tls_error is not None:
+        return _is_transient_tls_error(tls_error)
     if isinstance(error, RETRYABLE_ERRORS):
         return True
     return isinstance(error, _TRANSIENT_OS_ERRORS)
@@ -180,8 +180,8 @@ class AsyncHttpClient:
     and body, up to ``max_attempts`` attempts in total. A status such as 501 or 505, an unsupported address, too many
     redirects, a certificate that does not verify, a wrong TLS protocol version and a failure to set up the client (an
     unreadable certificate file) are not cured by a repeat and are raised at once. A TLS failure is told apart by the
-    ``reason`` code of the error, not by its text; one that is not known to be permanent is retried. Every other request is
-    sent exactly once.
+    ``reason`` code of the error, not by its text; only a cut connection or a damaged record is retried. Every other request
+    is sent exactly once.
     A failure is an ``HttpClientError`` whose message names the failure and, after a retry, the number of attempts.
     """
 
@@ -220,12 +220,21 @@ class AsyncHttpClient:
 
         self._client: Optional[httpx.AsyncClient] = None
 
-    async def __aenter__(self) -> "AsyncHttpClient":
-        """Enter async context manager."""
+    def _new_client(self) -> httpx.AsyncClient:
+        """The httpx client. Building it reads the certificates, so it fails when SSL_CERT_FILE or SSL_CERT_DIR points
+        to a file that is missing, unreadable or malformed; that is an ``HttpClientError``, and a repeat cannot cure it."""
         try:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
-        except OSError as e:  # e.g. SSL_CERT_FILE points to a file that is missing or unreadable
+            return httpx.AsyncClient(timeout=self.timeout)
+        except OSError as e:
             raise HttpClientError(_with_detail("Client set-up failed", _describe_network_error(e))) from e
+
+    async def __aenter__(self) -> "AsyncHttpClient":
+        """Enter async context manager.
+
+        Raises:
+            HttpClientError: If the client cannot be set up, e.g. SSL_CERT_FILE points to a file that is missing
+        """
+        self._client = self._new_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -353,7 +362,7 @@ class AsyncHttpClient:
             InvalidHeaderValueError: If a header value is not printable ASCII or has whitespace at either end
             HttpRequestError: If the gateway answers with an error status or the answer cannot be parsed
             HttpClientError: If the request fails before an answer arrives, e.g. a refused connection or a timeout
-                (the original error is its ``__cause__``)
+                (the original error is its ``__cause__``), or the client cannot be set up (a bad SSL_CERT_FILE)
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
         request_headers = self._build_headers(headers)
@@ -361,11 +370,32 @@ class AsyncHttpClient:
         json_body = self._serialize_body(request_body)
         max_attempts = self.max_attempts if self._has_idempotency_key(request_headers) else 1
 
+        # Outside `async with` one client serves all attempts and is closed at the end; it is built before the loop,
+        # so that a failure to set it up is not mistaken for a failure of an attempt and retried.
+        client = self._client or self._new_client()
+        try:
+            return await self._attempts(client, method, url, json_body, request_headers, params, response_model, max_attempts)
+        finally:
+            if client is not self._client:
+                await client.aclose()
+
+    async def _attempts(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        json_body: Optional[str],
+        request_headers: Dict[str, str],
+        params: Optional[Dict[str, Any]],
+        response_model: Optional[Type[T]],
+        max_attempts: int,
+    ) -> Optional[T]:
+        """Send the request, up to ``max_attempts`` times, and turn the outcome into a result or an error."""
         try:
             for attempt in range(1, max_attempts + 1):
                 is_last = attempt == max_attempts
                 try:
-                    response = await self._send(method, url, json_body, request_headers, params)
+                    response = await self._send(client, method, url, json_body, request_headers, params)
                 except (httpx.RequestError, OSError) as e:
                     if is_last or not _is_retryable_error(e):
                         raise HttpClientError(f"Request failed: {_describe_network_error(e)}{_after_attempts(attempt)}") from e
@@ -386,19 +416,17 @@ class AsyncHttpClient:
         except Exception as e:
             raise HttpRequestError(_with_detail("Unexpected error during request", _describe_network_error(e))) from e
 
+    @staticmethod
     async def _send(
-        self,
+        client: httpx.AsyncClient,
         method: str,
         url: str,
         content: Optional[str],
         headers: Dict[str, str],
         params: Optional[Dict[str, Any]],
     ) -> httpx.Response:
-        """Send one HTTP request with the shared client, or with a one-off client outside the context manager."""
-        if self._client:
-            return await self._client.request(method=method, url=url, content=content, headers=headers, params=params)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            return await client.request(method=method, url=url, content=content, headers=headers, params=params)
+        """Send one HTTP request."""
+        return await client.request(method=method, url=url, content=content, headers=headers, params=params)
 
     @staticmethod
     def _has_idempotency_key(headers: Dict[str, str]) -> bool:
