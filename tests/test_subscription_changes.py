@@ -14,7 +14,7 @@ from polako.sdk import (
 )
 from tests.error_cases import STATUS_ERRORS
 from tests.factories import make_credentials
-from tests.generators import generate_readable_string
+from tests.generators import generate_random_int, generate_readable_string
 
 ACTIONS = ["pause", "resume", "cancel"]
 EVERY_ACTION = pytest.mark.parametrize("action", ACTIONS)
@@ -79,7 +79,7 @@ async def test_the_id_is_a_uuid_or_text_in_any_form(gateway, subscription_client
 
 @pytest.mark.asyncio
 @EVERY_ACTION
-@pytest.mark.parametrize("bad", [None, "", 42, generate_readable_string(10)])
+@pytest.mark.parametrize("bad", [None, "", generate_random_int(), generate_readable_string(10)])
 async def test_a_bad_id_is_refused_before_any_request(gateway, subscription_client, action, bad):
     with pytest.raises(ValueError, match="subscription_id"):
         async with subscription_client:

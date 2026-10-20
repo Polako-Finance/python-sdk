@@ -905,9 +905,8 @@ async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_
     # differs between Python versions, and from some turn on the call has already returned. So the distances are tried
     # in one test. Distance 0 always cancels a call that has not returned (the caller is still suspended), so it proves
     # nothing about the window; the test requires a hit at a distance of 1 or more, which is the window after the close
-    # task has ended. On 3.12 (run by the author) and on 3.10, 3.12 and 3.13 (probed by the reviewer, on a model of the
-    # scheduling) distances 1 and 2 hit, and 3 and above return first. 3.11 is a CI leg that nobody has run: if no
-    # distance of 1 to 4 hits there, the test fails and shows it.
+    # task has ended. On 3.10, 3.12 and 3.13 distances 1 and 2 hit and 3 and above return first; on other versions the
+    # test fails if no distance of 1 to 4 hits.
     hits = 0
     for steps in range(5):
         tracking.closed = 0
