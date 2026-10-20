@@ -218,28 +218,33 @@ async def _close_with_timeout(client: httpx.AsyncClient) -> None:
     """Close the client, bounded in time. No failure of the close goes further than the log: it must not replace the
     outcome of the call that closes the client (a subscription that was created) or an error that is propagating.
 
+    The deadline is the SDK's own: ``aclose`` runs as a task that is waited for with a timeout, so that a
+    ``TimeoutError`` that ``aclose`` raises by itself is a failure like any other and is never taken for the deadline.
+
     A close that is cancelled, when the event loop shuts down, is logged too and then the cancellation goes on: the
     connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself reports
     ``Task was destroyed but it is pending``."""
-    loop = asyncio.get_running_loop()
-    started = loop.time()
+    closing = asyncio.ensure_future(client.aclose())
+    closing.add_done_callback(lambda finished: finished.cancelled() or finished.exception())  # nothing is left unread
     try:
-        await asyncio.wait_for(client.aclose(), CLOSE_TIMEOUT)
+        done, _ = await asyncio.wait({closing}, timeout=CLOSE_TIMEOUT)
     except asyncio.CancelledError:
+        closing.cancel()
         logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
         raise
+    if not done:
+        closing.cancel()
+        logger.warning(
+            "Closing the HTTP client timed out after %s seconds; its connections may stay open until they are collected",
+            CLOSE_TIMEOUT,
+        )
+        return
+    try:
+        closing.result()
+    except asyncio.CancelledError:
+        logger.warning("Closing the HTTP client was cancelled by the client itself; its connections may stay open")
     except Exception as e:  # noqa: BLE001 - see above; the failure is logged, not dropped
-        # On Python 3.11+ asyncio.TimeoutError is the builtin TimeoutError, which `aclose` can raise by itself. It is the
-        # deadline of the close if `wait_for` raised it because it cancelled the close (the cancellation is its cause), or,
-        # where it does not say so, if almost all of the time has passed (the clock has a resolution of its own).
-        deadline = isinstance(e.__cause__, asyncio.CancelledError) or loop.time() - started >= CLOSE_TIMEOUT * 0.9
-        if isinstance(e, asyncio.TimeoutError) and deadline:
-            logger.warning(
-                "Closing the HTTP client timed out after %s seconds; its connections may stay open until they are collected",
-                CLOSE_TIMEOUT,
-            )
-        else:
-            logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e), exc_info=True)
+        logger.warning("Closing the HTTP client failed: %s", _describe_network_error(e), exc_info=True)
 
 
 class AsyncHttpClient:
@@ -334,16 +339,16 @@ class AsyncHttpClient:
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
         nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. While an error is
-        propagating (given as ``exc_type``, or being handled by the code that calls this) the warning goes to the log
-        instead, because a warning that the merchant's filters turn into an error would replace that error.
+        This is a warning, not an error, and it stays one: a merchant's filter that turns warnings into errors does
+        not make it replace an error that is propagating, because then the warning is logged instead.
 
         A failure of closing the client does not raise: it is logged (see ``_close``).
         """
         if self._entered == 0:
             message = "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0"
-            if exc_type is None and sys.exc_info()[0] is None:
+            try:
                 warnings.warn(message, RuntimeWarning, stacklevel=_stacklevel_outside_sdk())
-            else:
+            except RuntimeWarning:  # the merchant's filters turn warnings into errors: not here, it could replace theirs
                 logger.warning(message)
             return
         self._entered -= 1
@@ -360,23 +365,13 @@ class AsyncHttpClient:
         No failure of the close comes out of here (see ``_close_with_timeout``).
 
         If the caller is cancelled while it waits, it leaves at once, with its cancellation, and the close goes on in the
-        background to its end or its timeout. A cancellation of the close task itself (by shutdown code that cancels
-        every task, say) is not a cancellation of the caller and is not passed on."""
-        caller = asyncio.current_task()
-        cancelling_before = caller.cancelling() if hasattr(caller, "cancelling") else None  # Python 3.11+
+        background to its end or its timeout. ``asyncio.wait`` is used, not ``shield``, because it tells the two
+        cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
+        ends the wait (and is logged by the task itself), so a caller that is not cancelled goes on."""
         task = asyncio.ensure_future(_close_with_timeout(client))
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if not task.cancelled():
-                raise
-            # The close task was cancelled. If the caller was cancelled too, in the same moment, its cancellation must
-            # still reach it (Python 3.11+ counts them; on 3.10 the two cannot be told apart, and the caller's
-            # cancellation is lost in this race).
-            if cancelling_before is not None and caller.cancelling() > cancelling_before:
-                raise
+        await asyncio.wait({task})
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Build request headers by merging default headers with extra headers."""

@@ -17,6 +17,8 @@ polako-finance = { path = "..", develop = true }
 pytest = ">=9.0.3"
 pytest-asyncio = ">=0.21.1"
 pytest-cov = ">=4.1.0"
+# A test that waits for something that never happens fails after the time limit instead of hanging.
+pytest-timeout = ">=2.1"
 # The tests raise the errors of anyio and httpcore the way the transport does.
 anyio = ">=3"
 httpcore = ">=0.18"
@@ -29,6 +31,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --strict-markers"
+timeout = 120
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",

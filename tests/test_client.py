@@ -816,10 +816,12 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="Task.cancelling() is Python 3.11+; on 3.10 the race cannot be told")
-async def test_a_caller_cancelled_in_the_same_moment_as_the_close_task_still_gets_its_cancellation(
-    gateway, tracking, monkeypatch
+@pytest.mark.parametrize("steps", range(7))
+async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_gets_its_cancellation(
+    gateway, tracking, monkeypatch, steps
 ):
+    # The caller is cancelled `steps` turns of the event loop after the close task: the windows differ between Python
+    # versions (how many tasks `wait_for` and the like put between), so every one of them is tried.
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set
     await http.__aenter__()
@@ -829,13 +831,17 @@ async def test_a_caller_cancelled_in_the_same_moment_as_the_close_task_still_get
 
     for task in list(http._closing):
         task.cancel()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)  # the close task is cancelled and the shield is done, the caller has not resumed yet
+    for _ in range(steps):
+        await asyncio.sleep(0)
+    finished_before = call.done()  # a call that has already returned is not cancelled by a later cancel(): that is fine
     call.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
+    if finished_before:
         await call
-    assert call.cancelled()
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert call.cancelled()
 
 
 @pytest.mark.asyncio
@@ -869,15 +875,42 @@ async def test_a_timeout_error_of_the_close_itself_is_not_taken_for_the_deadline
     assert caplog.records[-1].exc_info is not None
 
 
+@pytest.mark.asyncio
+async def test_a_timeout_of_the_transports_own_deadline_inside_the_close_is_not_taken_for_the_sdks(
+    client, gateway, tracking, platform, caplog
+):
+    gateway.respond(body=make_order_status_response())
+    error = TimeoutError(generate_readable_string(12))
+    error.__cause__ = asyncio.CancelledError()  # what a `wait_for` or `timeout` of the transport itself leaves behind
+    tracking.close_error = error
+
+    with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
+        await client.check_order_status(uuid4(), platform.platform_id, platform.secret_key)
+
+    assert "timed out" not in caplog.text
+    assert "Closing the HTTP client failed: TimeoutError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_warning_of_an_unbalanced_exit_is_emitted_when_an_error_was_handled_by_the_caller_of_the_loop(client):
+    # The usual shutdown: `except KeyboardInterrupt: asyncio.run(cleanup())`. Nothing is propagating inside the cleanup.
+    try:
+        raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        with pytest.warns(RuntimeWarning, match="exited more often"):
+            await client.__aexit__(None, None, None)
+
+
 @pytest.mark.parametrize(
     "name, is_sdk",
     [
-        ("polako.sdk", True),
-        ("polako.sdk._async_api", True),
-        ("polako.sdk_contrib.shutdown", False),
-        ("polako.sdkhelpers", False),
-        ("polako", False),
-        ("tests.test_client", False),
+        (sdk.__name__, True),
+        (f"{sdk.__name__}.{generate_readable_string(6)}", True),
+        (f"{sdk.__name__}.{generate_readable_string(6)}.{generate_readable_string(6)}", True),
+        (f"{sdk.__name__}{generate_readable_string(6)}", False),
+        (f"{sdk.__name__}_{generate_readable_string(6)}.{generate_readable_string(6)}", False),
+        (sdk.__name__.split(".")[0], False),
+        (generate_readable_string(8), False),
     ],
 )
 def test_only_the_modules_of_the_sdk_package_are_skipped_when_the_warning_looks_for_the_merchant(name, is_sdk):
