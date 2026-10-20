@@ -27,6 +27,7 @@ from polako.sdk._async_client import (
     _CUT_CONNECTION_REASONS,
     _DAMAGED_RECORD_REASONS,
     AsyncHttpClient,
+    _AcloseWatch,
     _is_sdk_module,
 )
 from polako.sdk._constants import REFUND_REASON_MAX_LENGTH, REFUND_REASON_MIN_LENGTH
@@ -949,14 +950,14 @@ async def test_cancelling_the_task_that_waits_logs_once_and_holds_the_aclose_onl
         if aclose_survives:
             await until(lambda: "stops holding it" in caplog.text)  # the hold was scheduled by the give-up of this path
 
-    assert caplog.text.count("was cancelled before it ended") == 1
-    # The SDK cancelled aclose, so it is not logged again as a foreign cancellation: checked after aclose has ended.
-    assert "although the SDK did not cancel it" not in caplog.text
     if aclose_survives:
-        survive.set()
+        survive.set()  # aclose ends only now
         await until(lambda: tracking.completed == 1)
-    else:
-        assert "stops holding it" not in caplog.text
+    await until(lambda: not http._closing)
+
+    assert caplog.text.count("was cancelled before it ended") == 1
+    # The SDK cancelled aclose, so it is not logged as a foreign cancellation: checked once aclose has ended.
+    assert "although the SDK did not cancel it" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -983,7 +984,11 @@ async def test_a_shutdown_that_cancels_both_tasks_logs_the_same_whatever_the_ord
 
 @pytest.mark.asyncio
 async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclose_ends(gateway, tracking, monkeypatch):
-    hold_delay = float(WAIT_LIMIT_SECONDS)  # a delay that nothing else in the SDK uses, to find the timer by
+    # The timer is found by whose callback it is (the watch of an aclose), not by its delay: `until()` makes
+    # `wait_for(..., WAIT_LIMIT_SECONDS)`, which on Python 3.10 and 3.11 schedules a timer of its own, and a delay
+    # that two timers share has failed the CI there. The delay is still one of its own, so that no other timer can
+    # be taken for it even if the callback were wrapped.
+    hold_delay = WAIT_LIMIT_SECONDS * 2 + generate_short_timeout()
     monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", hold_delay)
     monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
     timers = []
@@ -991,7 +996,7 @@ async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclos
 
     def recording(self, delay, callback, *args, **kwargs):
         handle = original(self, delay, callback, *args, **kwargs)
-        timers.append((delay, handle))
+        timers.append((delay, callback, handle))
         return handle
 
     monkeypatch.setattr(asyncio.BaseEventLoop, "call_later", recording)
@@ -1002,7 +1007,11 @@ async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclos
     await http.__aexit__(None, None, None)
     await until(lambda: not http._closing)
 
-    holds = [handle for delay, handle in timers if delay == hold_delay]
+    holds = [
+        handle
+        for delay, callback, handle in timers
+        if delay == hold_delay and isinstance(getattr(callback, "__self__", None), _AcloseWatch)
+    ]
     assert len(holds) == 1  # scheduled, once
     assert holds[0].cancelled()  # and nothing is left to keep a finished task alive
 
