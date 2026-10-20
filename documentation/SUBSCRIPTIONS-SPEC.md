@@ -17,7 +17,7 @@ registration forms, the form rendering helper, webhook parsers (four lifecycle e
 notification), exceptions by HTTP status, retries for keyed requests, the management methods (`get_subscription`,
 `list_subscriptions`, `pause_subscription`, `resume_subscription`, `cancel_subscription`), their models and enums.
 
-Out: retries of management methods and of payment methods, unification of the two signature schemes, a public
+Out: retries of management methods and of payment methods, unification of the two signature schemes, live checks on production, a public
 `verify_webhook_signature` (see Decisions).
 
 ## Gateway contract (verified 2026-10-08)
@@ -35,7 +35,7 @@ Out: retries of management methods and of payment methods, unification of the tw
 - Errors: 401 (missing or unknown key), 403 (key belongs to another company), 409 (subscriptions disabled for the company,
   or the customer already has a live subscription for the same `merchantSubscriptionRef`), 422 (invalid fields or key, and
   a currency outside the platform-wide allow-list), 502 (the provider rejected the card registration request).
-- Lifecycle webhooks go to `credentials["callback_url"]` of the platform (set in the platform settings in the dashboard):
+- Lifecycle webhooks go to `credentials["callback_url"]` of the platform (set in the platform settings in the dashboard; optional for generic platforms, required for one platform type):
   signed with HMAC-SHA256 over the raw compact JSON body with sorted keys, hex digest in `X-Signature`, key = the platform
   API key. Three attempts (1 s, 2 s back-off) on 5xx or network errors, 4xx is final.
   - `charge_succeeded`: `event`, `subscription_id`, `merchant_subscription_ref`, `amount` (string), `currency`, `charged_at` (ISO)
@@ -67,7 +67,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 | Change | `await pause_subscription(subscription_id)`, `await resume_subscription(subscription_id)`, `await cancel_subscription(subscription_id)`, each returns `None` |
 | Management results | `SubscriptionPage`: `items` (a tuple of `SubscriptionSummary`), `total`, `limit`, `offset`. `SubscriptionSummary`: `id`, `customer_id`, `customer_email`, `merchant_subscription_ref`, `amount` (`Decimal`), `currency`, `billing_interval`, `status`, `next_charge_at`, `last_charged_at`, `created_at`. `SubscriptionDetails`: the same fields except `customer_id` and `customer_email`, which are inside `customer` (`SubscriptionCustomer`: `id`, `external_customer_id`, `email`), plus `saved_card` (`SavedCard` or `None`: `id`, `masked_pan`, `card_brand`, `pan_expiry`, `status`; never a token), `anchor_at`, `failed_charge_count`, `last_failed_charge_at`, `charge_history` (a tuple of `ChargeAttempt`, newest first: `id`, `charge_date`, `order_id`, `status`, `amount`, `result_code`, `error_class`, `error_message`, `retry_count`, `next_retry_at`, `created_at`, `updated_at`, `payment_session_id`) and `events` (a tuple of `SubscriptionEvent`, oldest first: `id`, `event_type`, `payload`, `created_at`). All immutable |
 | Enums | `SubscriptionStatus` (`pending_registration`, `registration_failed`, `active`, `past_due`, `paused`, `cancelled`) and `ChargeAttemptStatus` (`pending`, `succeeded`, `failed`), both `str` enums, public |
-| Exceptions | Per status, all subclasses of `HttpRequestError`: `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx). `HttpClientError`: a failure before an answer arrived. Subclasses of `ValueError`: `ConfigurationError` (missing `company_id` or `api_key`, or an `api_key` that cannot be sent as a header), `InvalidArgumentError` (any argument check, raised before anything is sent), `InvalidHeaderValueError` (an `InvalidArgumentError`: an `idempotency_key` or a header that cannot be sent), `UnknownRegistrationFormError` (the `__cause__` of the `HttpRequestError` raised when a response cannot be read), `WebhookPayloadError` (the signed body is not JSON, not an object, has no event name, or a field is missing or malformed). `WebhookSignatureError` and its subclass `MissingSignatureError` |
+| Exceptions | Per status, all subclasses of `HttpRequestError`: `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409), `RequestValidationError` (422), `RateLimitedError` (429, `retry_after`), `ServerError` (5xx). `HttpRequestError` is a subclass of `HttpClientError`, the base of every HTTP failure; a failure before an answer arrived is a plain `HttpClientError`, so `except HttpClientError` catches status errors too. Subclasses of `ValueError`: `ConfigurationError` (missing `company_id` or `api_key`, or an `api_key` that cannot be sent as a header), `InvalidArgumentError` (any argument check, raised before anything is sent), `InvalidHeaderValueError` (an `InvalidArgumentError`: an `idempotency_key` or a header that cannot be sent), `UnknownRegistrationFormError` (the `__cause__` of the `HttpRequestError` raised when a response cannot be read), `WebhookPayloadError` (the signed body is not JSON, not an object, has no event name, or a field is missing or malformed). `WebhookSignatureError` and its subclass `MissingSignatureError` |
 
 ## Behaviour rules
 
@@ -82,7 +82,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   header, and never holds the key.
 - Arguments are checked before any request and raise `InvalidArgumentError`: `customer_email` contains `@` and no spaces;
   `amount` is a finite `Decimal` greater than zero with at most two decimal places (floats are rejected; the server keeps
-  cents); `currency` is not empty; `billing_interval` is a `BillingInterval` or its string value;
+  cents, so a third decimal is refused with a message to round to cents first); `currency` is not empty; `billing_interval` is a `BillingInterval` or its string value;
   `merchant_subscription_ref` is 1 to 128 characters; the three URLs are http or https with a host. The rest is left to the
   server. `amount` is sent as a plain decimal string (`990.00`, `1000` for `Decimal("1E+3")`), never with an exponent.
 - The `reason` of `refund_session` is 3 to 255 characters (`REFUND_REASON_MIN_LENGTH` and `REFUND_REASON_MAX_LENGTH`, exported by
@@ -145,14 +145,14 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   it; a context that was not suppressed (an error the caller was handling) is never followed, and the walk stops at an
   error of the SDK.
   - while connecting only a cut connection is retried (`ssl.SSLEOFError`, `ssl.SSLZeroReturnError`, `ssl.SSLSyscallError`,
-    the reason `UNEXPECTED_EOF_WHILE_READING`); every other failure of the handshake is a fault of the setup that a repeat
-    does not cure;
+    the reason `UNEXPECTED_EOF_WHILE_READING`, on a plain `SSLError` too, in both places); every other failure of the handshake is a fault of the setup that a repeat
+    does not cure (`PACKET_LENGTH_TOO_LONG` and `BAD_LENGTH` too: while connecting they mean a peer or proxy that answers in plain text);
   - on an established connection a cut connection and a damaged record are retried: `DECRYPTION_FAILED_OR_BAD_RECORD_MAC`,
     `DECRYPTION_FAILED`, `BAD_RECORD_MAC`, `SSLV3_ALERT_BAD_RECORD_MAC`, `RECORD_LAYER_FAILURE`, `UNEXPECTED_RECORD`,
     `BAD_LENGTH`, `PACKET_LENGTH_TOO_LONG`, `APPLICATION_DATA_AFTER_CLOSE_NOTIFY`;
   - any other TLS error, and one whose code the running Python does not know, is raised at once. The handshake alerts
     `SSLV3_ALERT_UNEXPECTED_MESSAGE` and `TLSV1_ALERT_DECODE_ERROR` and `TLSV1_ALERT_INTERNAL_ERROR` are not retried: they are
-    deterministic rejections.
+    deterministic rejections (under TLS 1.3 they arrive unwrapped on the first read; a server sends the internal error for a lasting configuration problem).
 - Never retried because a repeat gives the same result and spends the rate limit: a certificate that does not verify, a wrong
   protocol version, a failure to set up the client, `FileNotFoundError`, `PermissionError`.
 - Every attempt counts against the endpoint's limit of 20 requests per 60 seconds. There is no overall deadline. After a
@@ -184,16 +184,16 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   missing file fails at set-up too. The package declares
   `httpx >= 0.25, < 1.0` and `anyio >= 3`.
 - The close is the same at every exit (a call, `async with`) and runs as a task that the SDK keeps on the client object. A
-  call closes the client it built for itself. The shared client of `async with` is closed by the last user: the last
+  call closes the client it built for itself (decided before the build). The shared client of `async with` is closed by the last user: the last
   exit, or a call that borrowed it and outlives the exits, so one task's exit never closes the client under another task's
   call. Entering `async with` again (nested, or from another task) shares the open client and counts the entries; calls made
   outside `async with` while a client is open borrow it and are counted too.
 - Leaving `async with` more often than entering it (a shutdown hook that runs twice, a client never entered) does nothing but
   emit a `RuntimeWarning`, attributed to the merchant's code, and will be a `RuntimeError` from 0.3.0. If the merchant's
   filters turn warnings into errors it is raised when nothing is propagating or being handled, and logged instead when an
-  error is propagating or being handled, so as not to replace it.
+  error is propagating or being handled (read from `sys.exc_info()` too, whatever the hook passes: a hand-written `__aexit__(None, None, None)` and an error handled by the synchronous code around the loop count), so as not to replace it.
 - The close is bounded to 10 seconds (`CLOSE_TIMEOUT`, private, not a setting). A call that closes its own client can take
-  that long to return if the close is unexpectedly slow; the real transport closes without a round trip with the peer, so
+  that long to return if the close is unexpectedly slow; the real transport closes without a round trip with the peer (checked on httpcore 1.0.9 only, not on the 0.18 of the oldest floor), so
   this is an upper bound for a stalled peer, a starved event loop or a custom transport.
 - No failure of the close comes out of a call or of `__aexit__`; it never replaces the outcome of a call or an error that is
   propagating. Every one is logged at warning level by `polako.sdk._async_client`:
@@ -204,19 +204,19 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   - `... ended cancelled although the SDK did not cancel it; its connections may stay open`: `aclose` ended cancelled by
     someone else;
   - `... is still running N seconds after it was cancelled; the SDK stops holding it`.
-- "Never called" means the body of the coroutine that calls `aclose` never ran. It happens when the close task is cancelled
+- "Never called" means the body of the coroutine that calls `aclose` never ran (the flag is set there, not when its task is created). It happens when the close task is cancelled
   before its first step; when the close task and the task that runs `aclose` are both cancelled after the first step and
-  before `aclose` was called (what `asyncio.run` does at its end); and when the task that runs `aclose` is cancelled alone
-  before it was called (then the foreign-cancel line is not logged, since it says `aclose` was called). A close task
+  before `aclose` was called, in either order (what `asyncio.run` does at its end); and when the task that runs `aclose` is cancelled alone
+  before it was called, which the waiting task logs (then the foreign-cancel line is not logged, since it says `aclose` was called). A close task
   cancelled alone after its first step is not such a case: `aclose` is called and then cancelled, and the close counts as
   interrupted. These are the usual ways, not an exhaustive list: the condition decides (for example, the task that runs
   `aclose` cancelled alone and then the close task, before it wakes, is logged by the close task's callback as never
   attempted).
 - One cancellation is logged once, whatever the order in which asyncio steps the tasks: the SDK's own cancellation of `aclose`
   is never logged as a foreign one (that line is logged by the waiting task, after its wait returned). If the waiting task
-  is cancelled after a foreign cancellation of `aclose` and before it wakes, only "cancelled before it ended" is logged.
+  is cancelled after a foreign cancellation of `aclose` and before it wakes, only "cancelled before it ended" is logged, though `aclose` had already ended.
 - When the SDK gives up waiting (the deadline, or the cancellation of the waiting task) it cancels `aclose` and holds its
-  task for 10 more seconds (`CLOSE_HOLD`), because asyncio keeps only weak references to tasks; the hold ends as soon as
+  task for 10 more seconds (`CLOSE_HOLD`), because asyncio keeps only weak references to tasks (the `aclose` task is kept for its whole run too); the hold ends as soon as
   `aclose` does. If `aclose` is still running then, the SDK logs that and stops holding it, and asyncio may report it as `Task was destroyed but it is pending`.
 - A caller cancelled while it waits for the close leaves at once with its cancellation; the close goes on in the background.
   A cancellation of the close task alone does not reach a caller that was not cancelled, but a caller cancelled in the same
@@ -233,7 +233,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   `last_charged_at`, `amount`, `status`; `sort_order` is `asc` or `desc`; `search` is not blank when given; `status` and
   `billing_interval` hold members of the enums or their string values (several match any of them; an empty collection is
   refused); `created_from` and `created_to` are a `date` or a timezone-aware `datetime` (a naive one is rejected), sent as
-  ISO 8601 in UTC to the second, both bounds inclusive. `search` is matched by the server against the customer's email, the merchant
+  ISO 8601 (a `date` as a plain day, a `datetime` in UTC to the second), both bounds inclusive. `search` is matched by the server against the customer's email, the merchant
   reference and the id.
 - HTTP 400 stays a plain `HttpRequestError` (the server answers it for a filter or sort field it does not accept).
 - Results are read tolerantly: an unknown value of a known enum field stays the raw string and unknown fields are ignored; a
@@ -246,20 +246,20 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 
 ## Decisions
 
-| Name | Decision | State |
+| Name | Decision | State (implemented: the code follows it; decided: agreed, nothing to build) |
 |------|----------|-------|
 | result-with-key | `create_subscription` returns a result object carrying the used idempotency key; the caller may pass their own key (recommended) | implemented |
-| client-config | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key` | implemented |
+| client-config | `company_id` and the API key are client constructor parameters; the API key is the same value as `secret_key`; the header keeps the name `company_api_key` (the platform's proxy accepts underscores) | implemented |
 | unsigned-registration | A registration failure without a signature is rejected unless `allow_unsigned=True` | implemented |
 | currency-checked-by-server | `currency` is a plain string validated by the server (the gateway knows RSD, RUB, EUR, USD and applies a platform-wide allow-list that answers 422) | implemented |
 | unknown-event | An unknown webhook event is returned as `UnknownSubscriptionEvent` instead of raising | implemented |
 | retry-502 | 502 is retried together with 429, 500, 503 and 504, keyed requests only, at most three attempts; 501, 505 and the other statuses are not | implemented |
 | redirect-form | The wire type `iframe` is a redirect target, so the SDK names the model `RedirectForm` and the helper renders a redirect, not an `<iframe>`; the wire value `iframe` is still accepted. Nothing in the API says the page is embeddable, and hosted payment pages commonly refuse framing | implemented |
 | management-by-api-key | Merchants manage subscriptions with the platform API key as well as from the dashboard. One route per operation serves both: a dashboard login is used when the request carries one, otherwise the API key, and a login wins over a key sent beside it | implemented; the server release is pending |
-| no-standalone-verify | The signature check is not a public function: the two parsers already verify, and a second entry point would invite reading the body without the checks. A merchant who queues webhooks passes the raw body and the `X-Signature` value to the worker and calls the parser there | decided |
-| management-no-retry | Management methods are never retried. The server takes no `Idempotency-Key` on pause, resume and cancel, and a repeat after a lost response would meet the new status and answer 409, which cannot be told from a real refusal. The caller reads the subscription and decides. Revisit when the server accepts an `Idempotency-Key` on the changes | implemented |
+| no-standalone-verify | The signature check is not a public function: the two parsers already verify, and a second entry point would invite reading the body without the checks. A merchant who queues webhooks passes the raw body and the `X-Signature` value to the worker and calls the parser there. Revisit if a real need appears, under a name that cannot be mistaken for the payment callback check | decided |
+| management-no-retry | Management methods are never retried, neither the changes nor the reads. The server takes no `Idempotency-Key` on pause, resume and cancel, and a repeat after a lost response would meet the new status and answer 409, which cannot be told from a real refusal. The caller reads the subscription and decides. Reads could be retried safely, but the retry rules are shared with the payment methods. Revisit when the server accepts an `Idempotency-Key` on the changes | implemented |
 | management-not-found | A 404 is a `NotFoundError`, a subclass of `HttpRequestError`, so that "no such subscription" is not caught with every other HTTP failure | implemented |
-| management-one-page | `list_subscriptions` returns one page (`limit`, `offset`) as a `SubscriptionPage`; there is no iterator | implemented |
+| management-one-page | `list_subscriptions` returns one page (`limit`, `offset`) as a `SubscriptionPage`; there is no iterator, and one can be added later without changing it | implemented |
 | tolerant-reading | Management results keep an unknown enum value as the raw string and ignore unknown fields, so that a status added by the server does not break a merchant's listing | implemented |
 
 ## Subscription management on the server
@@ -296,5 +296,4 @@ charge in the history is what `refund_session` needs.
 |------|--------|
 | 2026-10-08 | Created from the gateway contract: create, registration forms and their rendering, webhook parsers, exceptions by status, retries for keyed requests, client-side argument checks |
 | 2026-10-09 | Management methods and their models; `NotFoundError`; one reader for times (always timezone-aware); retries limited to the statuses and failures above; read timeouts retried |
-| 2026-10-20 | 0.2.1: typed argument errors (`InvalidArgumentError`, `InvalidHeaderValueError`); checks of the API key and of headers; messages of network failures; classification of TLS failures; client set-up, closing and `async with` rules |
-| 2026-10-21 | v0.43: the text was shortened and regrouped by topic (the per-version history rows were dropped); no rule was added or removed |
+| 2026-10-21 | v0.43 (SDK 0.2.1): typed argument errors (`InvalidArgumentError`, `InvalidHeaderValueError`); checks of the API key and of headers; messages of network failures; classification of TLS failures in retries; client set-up, closing and `async with` rules; limits of the refund reason; the text regrouped by topic |
