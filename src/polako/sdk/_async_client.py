@@ -1,6 +1,7 @@
 """Async HTTP client for Polako Finance API."""
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -221,10 +222,21 @@ def _keep(task: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
     task.add_done_callback(keep.discard)
 
 
-def _log_cancelled_close(finished: "asyncio.Future") -> None:
-    """Log a close task that was cancelled, also one that was cancelled before it ran a single step."""
-    if finished.cancelled():
+class _CloseAttempt:
+    """Whether the task that closes a client got as far as calling ``aclose``."""
+
+    started = False
+
+
+def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
+    """Log a close task that was cancelled, also one that was cancelled before it ran a single step: then no close was
+    attempted and the client stays unclosed, which is not the same as a close that was interrupted."""
+    if not finished.cancelled():
+        return
+    if attempt.started:
         logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
+    else:
+        logger.warning("Closing the HTTP client was cancelled before it started; no close was attempted, the client stays open")
 
 
 class _AcloseWatch:
@@ -267,7 +279,7 @@ class _AcloseWatch:
         self.keep.discard(self.closing)
 
 
-async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Future"]) -> None:
+async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Future"], attempt: _CloseAttempt) -> None:
     """Close the client, bounded in time. No failure of the close goes further than the log: it must not replace the
     outcome of the call that closes the client (a subscription that was created) or an error that is propagating.
 
@@ -280,6 +292,7 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
     cancels both. A close that is cancelled, when the event loop shuts down, is logged by the caller of this function (see
     ``_close``); the connections may stay open, and with a loop that is closed without cancelling its tasks asyncio itself
     reports ``Task was destroyed but it is pending``."""
+    attempt.started = True
     closing = asyncio.ensure_future(client.aclose())
     watch = _AcloseWatch(closing, keep)
     try:
@@ -424,9 +437,10 @@ class AsyncHttpClient:
         background to its end or its timeout. ``asyncio.wait`` is used, not ``shield``, because it tells the two
         cancellations apart on every Python: a cancelled caller gets ``CancelledError``, a cancelled close task only
         ends the wait (and is logged, see ``_log_cancelled_close``), so a caller that is not cancelled goes on."""
-        task = asyncio.ensure_future(_close_with_timeout(client, self._closing))
+        attempt = _CloseAttempt()
+        task = asyncio.ensure_future(_close_with_timeout(client, self._closing, attempt))
         _keep(task, self._closing)
-        task.add_done_callback(_log_cancelled_close)
+        task.add_done_callback(functools.partial(_log_cancelled_close, attempt))
         await asyncio.wait({task})
 
     def _build_headers(self, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:

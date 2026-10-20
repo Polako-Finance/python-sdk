@@ -828,33 +828,39 @@ async def test_a_call_cancelled_while_it_closes_leaves_at_once_and_the_close_goe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("steps", range(3))
 async def test_a_caller_cancelled_around_the_moment_the_close_task_is_cancelled_gets_its_cancellation(
-    gateway, tracking, monkeypatch, steps
+    gateway, tracking, monkeypatch
 ):
-    # The caller is cancelled `steps` turns of the event loop after the close task: the windows differ between Python
-    # versions (how many tasks `wait_for` and the like put between), so each of them is tried. From the third turn on the
-    # call has already returned on every Python that was probed (3.10, 3.12, 3.13), and a case there would assert nothing.
-    http = AsyncHttpClient(f"https://{generate_random_host()}")
-    tracking.close_gate = asyncio.Event()  # never set
-    await http.__aenter__()
-    last_user_closes(http, monkeypatch)
-    call = asyncio.create_task(http.get(any_path()))
-    await until(lambda: tracking.closed == 1)
+    # The caller is cancelled `steps` turns of the event loop after the close task. How many turns lie between the two
+    # differs between Python versions (how many tasks `wait_for` and the like put between), and from some turn on the
+    # call has already returned. So all the distances are tried in one test, and the test requires that at least one of
+    # them cancelled a call that had not returned yet: on a version where none does, it fails instead of passing empty.
+    hits = 0
+    for steps in range(6):
+        tracking.closed = 0
+        http = AsyncHttpClient(f"https://{generate_random_host()}")
+        tracking.close_gate = asyncio.Event()  # never set
+        await http.__aenter__()
+        last_user_closes(http, monkeypatch)
+        call = asyncio.create_task(http.get(any_path()))
+        await until(lambda: tracking.closed == 1)
 
-    for task in list(http._closing):
-        task.cancel()
-    for _ in range(steps):
-        await asyncio.sleep(0)
-    finished_before = call.done()  # a call that has already returned is not cancelled by a later cancel(): that is fine
-    call.cancel()
+        for task in list(http._closing):
+            task.cancel()
+        for _ in range(steps):
+            await asyncio.sleep(0)
+        finished_before = call.done()  # a call that has already returned is not cancelled by a later cancel(): fine
+        call.cancel()
 
-    if finished_before:
-        await call
-    else:
-        with pytest.raises(asyncio.CancelledError):
+        if finished_before:
             await call
-        assert call.cancelled()
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            assert call.cancelled()
+            hits += 1
+
+    assert hits >= 1
 
 
 @pytest.mark.asyncio
@@ -929,35 +935,59 @@ def waiting_tasks(monkeypatch):
     return recorded
 
 
+@pytest.fixture
+def hold_timers(monkeypatch):
+    """The timers that the SDK schedules to hold a task after giving up (the callback is the watch of an aclose). They
+    are found by whose callback they are, not by their delay: `wait_for`, on Python 3.10 and 3.11, schedules timers of
+    its own, and a delay that two timers share has failed the CI there."""
+    recorded = []
+    original = asyncio.BaseEventLoop.call_later
+
+    def recording(self, delay, callback, *args, **kwargs):
+        handle = original(self, delay, callback, *args, **kwargs)
+        if isinstance(getattr(callback, "__self__", None), _AcloseWatch):
+            recorded.append(handle)
+        return handle
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "call_later", recording)
+    return recorded
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("aclose_survives", [True, False], ids=["aclose-survives", "aclose-honours-the-cancellation"])
 async def test_cancelling_the_task_that_waits_logs_once_and_holds_the_aclose_only_if_it_survives(
-    gateway, tracking, monkeypatch, caplog, waiting_tasks, aclose_survives
+    gateway, tracking, monkeypatch, caplog, waiting_tasks, hold_timers, aclose_survives
 ):
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set
     survive = tracking.survive_gate = asyncio.Event() if aclose_survives else None
-    monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", generate_short_timeout())
+    # A short hold for the survivor, so that it runs out; a long one otherwise, so that it cannot fire during the test.
+    monkeypatch.setattr(
+        "polako.sdk._async_client.CLOSE_HOLD", generate_short_timeout() if aclose_survives else WAIT_LIMIT_SECONDS * 2
+    )
     await http.__aenter__()
 
     with caplog.at_level(logging.WARNING, logger="polako.sdk._async_client"):
         closing = asyncio.create_task(http.__aexit__(None, None, None))
         await until(lambda: tracking.closed == 1 and waiting_tasks)
+        running = [task for task in http._closing if task not in waiting_tasks]  # the task that runs aclose
         for task in waiting_tasks:
             task.cancel()  # shutdown code that cancels the close task; aclose is not touched by it
         await closing
-        await until(lambda: not http._closing or aclose_survives)  # without a survivor aclose ends at once
         if aclose_survives:
             await until(lambda: "stops holding it" in caplog.text)  # the hold was scheduled by the give-up of this path
-
-    if aclose_survives:
-        survive.set()  # aclose ends only now
-        await until(lambda: tracking.completed == 1)
-    await until(lambda: not http._closing)
+            survive.set()  # aclose ends only now
+            await until(lambda: tracking.completed == 1)
+        await until(lambda: all(task.done() for task in running))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)  # the done-callbacks of aclose have run
 
     assert caplog.text.count("was cancelled before it ended") == 1
     # The SDK cancelled aclose, so it is not logged as a foreign cancellation: checked once aclose has ended.
     assert "although the SDK did not cancel it" not in caplog.text
+    assert len(hold_timers) == 1  # the give-up of this path scheduled a hold
+    if not aclose_survives:
+        assert hold_timers[0].cancelled()  # aclose ended at once, so the hold was cancelled and cannot log anything
 
 
 @pytest.mark.asyncio
@@ -983,23 +1013,11 @@ async def test_a_shutdown_that_cancels_both_tasks_logs_the_same_whatever_the_ord
 
 
 @pytest.mark.asyncio
-async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclose_ends(gateway, tracking, monkeypatch):
-    # The timer is found by whose callback it is (the watch of an aclose), not by its delay: `until()` makes
-    # `wait_for(..., WAIT_LIMIT_SECONDS)`, which on Python 3.10 and 3.11 schedules a timer of its own, and a delay
-    # that two timers share has failed the CI there. The delay is still one of its own, so that no other timer can
-    # be taken for it even if the callback were wrapped.
-    hold_delay = WAIT_LIMIT_SECONDS * 2 + generate_short_timeout()
-    monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", hold_delay)
+async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclose_ends(
+    gateway, tracking, monkeypatch, hold_timers
+):
+    monkeypatch.setattr("polako.sdk._async_client.CLOSE_HOLD", WAIT_LIMIT_SECONDS * 2)  # long: it cannot fire in the test
     monkeypatch.setattr("polako.sdk._async_client.CLOSE_TIMEOUT", generate_short_timeout())
-    timers = []
-    original = asyncio.BaseEventLoop.call_later
-
-    def recording(self, delay, callback, *args, **kwargs):
-        handle = original(self, delay, callback, *args, **kwargs)
-        timers.append((delay, callback, handle))
-        return handle
-
-    monkeypatch.setattr(asyncio.BaseEventLoop, "call_later", recording)
     http = AsyncHttpClient(f"https://{generate_random_host()}")
     tracking.close_gate = asyncio.Event()  # never set: the cancellation of the deadline ends aclose at once
     await http.__aenter__()
@@ -1007,13 +1025,8 @@ async def test_the_hold_timer_is_scheduled_for_the_hold_and_cancelled_when_aclos
     await http.__aexit__(None, None, None)
     await until(lambda: not http._closing)
 
-    holds = [
-        handle
-        for delay, callback, handle in timers
-        if delay == hold_delay and isinstance(getattr(callback, "__self__", None), _AcloseWatch)
-    ]
-    assert len(holds) == 1  # scheduled, once
-    assert holds[0].cancelled()  # and nothing is left to keep a finished task alive
+    assert len(hold_timers) == 1  # scheduled, once
+    assert hold_timers[0].cancelled()  # and nothing is left to keep a finished task alive
 
 
 @pytest.mark.asyncio
@@ -1071,7 +1084,8 @@ async def test_a_close_task_cancelled_before_its_first_step_is_logged(gateway, t
             task.cancel()
         await caller
 
-    assert "was cancelled before it ended" in caplog.text
+    assert "was cancelled before it started; no close was attempted" in caplog.text
+    assert "was cancelled before it ended" not in caplog.text  # it did not start, so it was not interrupted either
     assert tracking.closed == 0  # aclose never ran: the log is the only trace
 
 
