@@ -222,6 +222,9 @@ def _keep(task: "asyncio.Future", keep: Set["asyncio.Future"]) -> None:
     task.add_done_callback(keep.discard)
 
 
+_NOT_ATTEMPTED = "Closing the HTTP client was cancelled before it started; no close was attempted, the client stays open"
+
+
 class _CloseAttempt:
     """Whether ``aclose`` actually ran: set inside the task that runs it (see ``_run_aclose``), not when the task is
     created, because a task that is cancelled before its first step never runs its coroutine."""
@@ -235,14 +238,16 @@ async def _run_aclose(client: httpx.AsyncClient, attempt: _CloseAttempt) -> None
 
 
 def _log_cancelled_close(attempt: _CloseAttempt, finished: "asyncio.Future") -> None:
-    """Log a close task that was cancelled, also one that was cancelled before it ran a single step: then no close was
-    attempted and the client stays unclosed, which is not the same as a close that was interrupted."""
+    """Log a close task that was cancelled. If ``aclose`` never ran (the task was cancelled before its first step, or after
+    its first step but before the task that runs ``aclose`` had stepped) no close was attempted and the client stays
+    unclosed, which is not the same as a close that was interrupted. The flag is set where ``aclose`` runs, not where
+    its task is created: do not move it to match a reading of this text."""
     if not finished.cancelled():
         return
     if attempt.started:
         logger.warning("Closing the HTTP client was cancelled before it ended; its connections may stay open")
     else:
-        logger.warning("Closing the HTTP client was cancelled before it started; no close was attempted, the client stays open")
+        logger.warning(_NOT_ATTEMPTED)
 
 
 class _AcloseWatch:
@@ -313,9 +318,12 @@ async def _close_with_timeout(client: httpx.AsyncClient, keep: Set["asyncio.Futu
             CLOSE_TIMEOUT,
         )
     elif closing.cancelled():
-        logger.warning(
-            "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open"
-        )
+        if attempt.started:
+            logger.warning(
+                "Closing the HTTP client ended cancelled although the SDK did not cancel it; its connections may stay open"
+            )
+        else:  # the task that runs aclose was cancelled before it ran: aclose was never called
+            logger.warning(_NOT_ATTEMPTED)
 
 
 class AsyncHttpClient:
