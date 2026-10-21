@@ -7,14 +7,13 @@ import pytest
 
 from polako.sdk import (
     ConfigurationError,
-    ConflictError,
     HttpClientError,
     HttpRequestError,
     PolakoClient,
 )
 from tests.error_cases import STATUS_ERRORS
 from tests.factories import make_credentials
-from tests.generators import generate_readable_string
+from tests.generators import generate_final_error_status, generate_random_int, generate_readable_string
 
 ACTIONS = ["pause", "resume", "cancel"]
 EVERY_ACTION = pytest.mark.parametrize("action", ACTIONS)
@@ -36,7 +35,7 @@ async def test_it_is_a_patch_to_the_subscription_with_the_api_key(gateway, subsc
 
     request = gateway.last
     assert request.method == "PATCH"
-    assert request.url.host == "stg-api.infra.polako-finance.com"
+    assert request.url.host == "stg-api.infra.polako-finance.com"  # the real host, not a constant of the SDK
     assert request.url.path == f"/v1/company/{credentials.company_id}/subscriptions/{subscription_id}/{action}"
     assert request.headers["company_api_key"] == credentials.api_key
 
@@ -79,7 +78,7 @@ async def test_the_id_is_a_uuid_or_text_in_any_form(gateway, subscription_client
 
 @pytest.mark.asyncio
 @EVERY_ACTION
-@pytest.mark.parametrize("bad", [None, "", "not-a-uuid", 42, generate_readable_string(10)])
+@pytest.mark.parametrize("bad", [None, "", generate_random_int(), generate_readable_string(10)])
 async def test_a_bad_id_is_refused_before_any_request(gateway, subscription_client, action, bad):
     with pytest.raises(ValueError, match="subscription_id"):
         async with subscription_client:
@@ -123,8 +122,14 @@ async def test_each_failure_status_is_its_own_error_with_the_servers_reason(
 @pytest.mark.asyncio
 @EVERY_ACTION
 async def test_the_api_key_never_appears_in_an_error(gateway, subscription_client, credentials, action):
-    with pytest.raises(ConflictError) as caught:
-        await change(gateway, subscription_client, action, status=409, body={"detail": "no"})
+    with pytest.raises(HttpRequestError) as caught:
+        await change(
+            gateway,
+            subscription_client,
+            action,
+            status=generate_final_error_status(),
+            body={"detail": generate_readable_string(8)},
+        )
 
     assert credentials.api_key not in str(caught.value) and credentials.api_key not in repr(caught.value)
 

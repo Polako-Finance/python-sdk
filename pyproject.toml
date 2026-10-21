@@ -1,6 +1,6 @@
 [project]
 name = "polako-finance"
-version = "0.2.0"
+version = "0.2.1"
 description = "Official async Python SDK for Polako Finance payment gateway"
 authors = [{ name = "Polako Finance", email = "support@polako-finance.com" }]
 readme = {content-type = "text/markdown", file = "README.pypi.md"}
@@ -25,7 +25,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "httpx[http2] >= 0.25",
+    "httpx[http2] >= 0.25, < 1.0",
+    "anyio >= 3",
 ]
 
 [project.urls]
@@ -36,7 +37,7 @@ Repository = "https://github.com/Polako-Finance/python-sdk"
 
 [tool.poetry]
 name = "polako-finance"
-version = "0.2.0"
+version = "0.2.1"
 description = "Official async Python SDK for Polako Finance payment gateway"
 authors = ["Polako Finance <support@polako-finance.com>"]
 readme = "README.pypi.md"
@@ -64,7 +65,8 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-httpx = {extras = ["http2"], version = "^0.25"}
+httpx = {extras = ["http2"], version = ">=0.25,<1.0"}
+anyio = ">=3"
 
 [tool.poetry.group.dev.dependencies]
 black = ">=26.3.1"

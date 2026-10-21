@@ -25,13 +25,21 @@ Example:
 """
 
 from polako.sdk._async_api import AsyncPolakoClient as PolakoClient
-from polako.sdk._constants import BillingInterval, ChargeAttemptStatus, SubscriptionStatus
+from polako.sdk._constants import (
+    REFUND_REASON_MAX_LENGTH,
+    REFUND_REASON_MIN_LENGTH,
+    BillingInterval,
+    ChargeAttemptStatus,
+    SubscriptionStatus,
+)
 from polako.sdk._exceptions import (
     ConfigurationError,
     ConflictError,
     ForbiddenError,
     HttpClientError,
     HttpRequestError,
+    InvalidArgumentError,
+    InvalidHeaderValueError,
     MissingSignatureError,
     NotFoundError,
     RateLimitedError,
@@ -91,7 +99,7 @@ from polako.sdk._webhook import (
     parse_subscription_webhook,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     # Client
@@ -114,6 +122,8 @@ __all__ = [
     "RefundedItem",
     "RefundItem",
     "RefundResponse",
+    "REFUND_REASON_MAX_LENGTH",
+    "REFUND_REASON_MIN_LENGTH",
     "SessionCustomerInfo",
     "SessionInfo",
     "ShoppingCart",
@@ -150,6 +160,8 @@ __all__ = [
     "UnknownRegistrationFormError",
     "HttpClientError",
     "HttpRequestError",
+    "InvalidArgumentError",
+    "InvalidHeaderValueError",
     "UnauthorizedError",
     "ForbiddenError",
     "NotFoundError",

@@ -27,11 +27,11 @@ make build            # poetry build
 - **Formatting**: Black + isort (profile=black)
 - **Type checking**: mypy (Python 3.11 target)
 - **Async-first**: httpx with context manager pattern
-- **Tests**: data comes from `tests/generators.py` and `tests/factories.py` (`make_*(**overrides)` returns fresh randomized data, a test overrides only what it checks), no literals; dates from `now()`.
+- **Tests**: data comes from `tests/generators.py` and `tests/factories.py` (`make_*(**overrides)` returns fresh randomized data, a test overrides only what it checks), no literals, except values that are pinned on purpose: the real hosts of the environments, the empty or zero value that is the case under test, and protocol codes (the reason codes of TLS errors) that a retry test names in a table of its own; dates from `now()`.
 
 ## Key Context
 
 - HMAC-SHA256 signature authentication (not Bearer tokens)
 - Targets payment-gateway endpoints (minimal migration impact)
 - Currencies: RSD | Languages: sr, en, ru
-- PyPI package: `polako-finance` v0.1.9
+- PyPI package: `polako-finance` v0.2.1

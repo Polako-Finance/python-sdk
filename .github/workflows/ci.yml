@@ -10,6 +10,7 @@ jobs:
   test:
     name: Test on Python ${{ matrix.python-version }}
     runs-on: ubuntu-22.04 
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +53,52 @@ jobs:
         file: ./tests/coverage.xml
         fail_ci_if_error: false
 
+  test-oldest-httpx:
+    name: Test on the oldest supported httpx (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: 2.1.2
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Install the tests project and the SDK
+      run: poetry -C tests install --no-interaction
+
+    # The lock file has the newest httpx; the package declares httpx >= 0.25, so the floor is tested too.
+    - name: Install the oldest supported httpx
+      run: poetry -C tests run python -m pip install "httpx[http2]==0.25.0"
+
+    # httpx 0.25.0 requires httpcore 0.18, so pip replaces the httpcore and h11 of the lock file: the job tests the
+    # transport of the floor, not the locked one. The versions are printed and checked so that this stays visible.
+    - name: Check which httpx, httpcore and h11 the tests will import
+      run: |
+        poetry -C tests run python -c "
+        import httpx, httpcore, h11
+        print('httpx', httpx.__version__, 'httpcore', httpcore.__version__, 'h11', h11.__version__)
+        assert httpx.__version__ == '0.25.0', httpx.__version__
+        assert httpcore.__version__.startswith('0.18'), httpcore.__version__
+        "
+
+    - name: Run tests
+      run: poetry -C tests run pytest -v
+
   lint:
     name: Lint and type check
     runs-on: ubuntu-latest
@@ -87,13 +134,13 @@ jobs:
       run: poetry install --no-interaction
       
     - name: Run Black
-      run: poetry run black --check src/
+      run: poetry run black --check src/ tests/
       
     - name: Run isort
-      run: poetry run isort --check-only src/
+      run: poetry run isort --check-only src/ tests/
       
     - name: Run flake8
-      run: poetry run flake8 src/
+      run: poetry run flake8 src/ tests/
       
     - name: Run mypy
       run: poetry run mypy src/polako/sdk/ || echo "Type checking completed with warnings"

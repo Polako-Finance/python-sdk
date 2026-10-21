@@ -73,3 +73,41 @@ def generate_aware_datetime() -> datetime:
 def generate_naive_datetime() -> datetime:
     """A recent local time with no zone attached."""
     return generate_recent_datetime(days_ago=random.randint(0, 30)).replace(tzinfo=None)
+
+
+def generate_short_timeout() -> float:
+    """A timeout of a few milliseconds, for a test that waits for it to run out."""
+    return random.uniform(0.005, 0.02)
+
+
+WAIT_LIMIT_SECONDS = 5  # the longest a test waits for something to happen before it fails instead of hanging
+
+
+def generate_random_int() -> int:
+    """A large integer, for a test that needs a value that is not a string."""
+    return random.randint(10**8, 10**9)
+
+
+def generate_attempt_count() -> int:
+    """A number of attempts of a retried request: at least two, so that a retry happens."""
+    return random.randint(2, 4)
+
+
+def generate_rate_limit_status() -> int:
+    """The HTTP status of a rate limit answer: the SDK retries it and raises `RateLimitedError`."""
+    return 429
+
+
+def generate_server_error_status() -> int:
+    """The HTTP status of a server error that the SDK retries and raises as `ServerError`."""
+    return random.choice((500, 502, 503, 504))
+
+
+def generate_retryable_status() -> int:
+    """The HTTP status of an answer that the SDK retries."""
+    return random.choice((generate_rate_limit_status(), generate_server_error_status()))
+
+
+def generate_final_error_status() -> int:
+    """The HTTP status of an error answer that the SDK does not retry."""
+    return random.choice((400, 401, 403, 404, 409, 422))

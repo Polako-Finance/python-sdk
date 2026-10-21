@@ -5,9 +5,14 @@ from decimal import Decimal
 from typing import Dict, Iterable, List, Optional, TypeVar, Union
 from uuid import UUID, uuid4
 
-from polako.sdk._async_client import AsyncHttpClient
-from polako.sdk._constants import BillingInterval, SubscriptionStatus
-from polako.sdk._exceptions import ConfigurationError
+from polako.sdk._async_client import AsyncHttpClient, is_sendable_header_value
+from polako.sdk._constants import (
+    REFUND_REASON_MAX_LENGTH,
+    REFUND_REASON_MIN_LENGTH,
+    BillingInterval,
+    SubscriptionStatus,
+)
+from polako.sdk._exceptions import ConfigurationError, InvalidArgumentError, InvalidHeaderValueError
 from polako.sdk._order import (
     CheckStatusRequest,
     CreateOrderRequest,
@@ -79,12 +84,28 @@ class AsyncPolakoClient:
         return f"{type(self).__name__}(company_id={self._company_id!r}, api_key={key})"
 
     async def __aenter__(self) -> "AsyncPolakoClient":
-        """Enter async context manager."""
+        """Enter async context manager.
+
+        Raises:
+            HttpClientError: If the client cannot be set up, e.g. ``SSL_CERT_FILE`` names a file that is malformed
+                (from httpx 0.28 also one that is missing), or a proxy setting cannot be used. This happens
+                at ``async with``, not at a call, so keep that line inside the ``try`` of your error handling.
+        """
         await self._http_client.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit async context manager."""
+        """Exit async context manager.
+
+        An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. If your filters turn
+        warnings into errors (``-W error``, pytest ``filterwarnings = error``) the warning raises, so that your tests
+        catch it, unless an error is propagating or being handled: then it is logged instead, so as not to replace that
+        error.
+
+        A failure of closing the HTTP client does not raise: it is logged, and the close is given up after 10 seconds,
+        an upper bound for a close that is unexpectedly slow.
+        """
         await self._http_client.__aexit__(exc_type, exc_val, exc_tb)
 
     async def create_order(
@@ -107,9 +128,9 @@ class AsyncPolakoClient:
             SessionInfo containing payment session details
 
         Raises:
-            ValueError: If validation of order or customer fails
+            InvalidArgumentError: If validation of order or customer fails
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         # Validate both arguments before sending request
         order.validate()
@@ -163,7 +184,7 @@ class AsyncPolakoClient:
 
         Raises:
             HttpRequestError: If the API request fails (e.g., 404 if session not found, 410 if expired)
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         return await self._http_client.get(
             f"/v1/session/{session_id}",
@@ -197,9 +218,9 @@ class AsyncPolakoClient:
             PaymentUrlResult containing the payment URL and gateway metadata
 
         Raises:
-            ValueError: If validation of customer info fails
+            InvalidArgumentError: If validation of customer info fails
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         customer.validate()
 
@@ -235,7 +256,8 @@ class AsyncPolakoClient:
             session_id: Payment session UUID to refund
             platform_id: Platform identifier UUID for authentication
             secret_key: Secret key used for generating request signature
-            reason: Reason for the refund (3-255 characters)
+            reason: Reason for the refund, from ``REFUND_REASON_MIN_LENGTH`` to ``REFUND_REASON_MAX_LENGTH``
+                characters (3 to 255; both names are exported by ``polako.sdk``)
             refund_items: Optional list of RefundItem for partial refund.
                           If None, all remaining items are refunded.
 
@@ -243,16 +265,18 @@ class AsyncPolakoClient:
             RefundResponse containing refund transaction details
 
         Raises:
-            ValueError: If reason is too short/long or refund_items is empty
+            InvalidArgumentError: If reason is not a string or is too short/long, or refund_items is empty
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
-        if not reason or len(reason) < 3:
-            raise ValueError("'reason' must be at least 3 characters")
-        if len(reason) > 255:
-            raise ValueError("'reason' must be at most 255 characters")
+        if not isinstance(reason, str):
+            raise InvalidArgumentError(f"'reason' must be a string, got {type(reason).__name__}")
+        if len(reason) < REFUND_REASON_MIN_LENGTH:
+            raise InvalidArgumentError(f"'reason' must be at least {REFUND_REASON_MIN_LENGTH} characters")
+        if len(reason) > REFUND_REASON_MAX_LENGTH:
+            raise InvalidArgumentError(f"'reason' must be at most {REFUND_REASON_MAX_LENGTH} characters")
         if refund_items is not None and len(refund_items) == 0:
-            raise ValueError("'refund_items' must not be empty; pass None for a full refund")
+            raise InvalidArgumentError("'refund_items' must not be empty; pass None for a full refund")
 
         is_full_refund = refund_items is None
 
@@ -295,7 +319,7 @@ class AsyncPolakoClient:
 
         Raises:
             HttpRequestError: If the API request fails
-            HttpClientError: If there's a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         signature = self._create_signature(
             f"status|{session_id}|{platform_id}",
@@ -325,7 +349,7 @@ class AsyncPolakoClient:
         success_url: str,
         cancel_url: str,
         error_url: str,
-        idempotency_key: Optional[str] = None,
+        idempotency_key: Optional[Union[str, UUID]] = None,
     ) -> SubscriptionCreated:
         """
         Create a subscription and get the form that sends the customer through the card registration (3DS).
@@ -351,21 +375,23 @@ class AsyncPolakoClient:
             success_url: Where the customer returns after a successful registration
             cancel_url: Where the customer returns after cancelling
             error_url: URL that receives a POST when the registration fails
-            idempotency_key: Optional key that makes the call safe to repeat
+            idempotency_key: Optional key that makes the call safe to repeat: a UUID or a string
 
         Returns:
             SubscriptionCreated with the subscription ID, the registration form and the idempotency key used
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``amount`` is not greater than zero
+            InvalidArgumentError: Input validation errors, e.g. ``amount`` is not greater than zero
+            InvalidHeaderValueError: If ``idempotency_key`` is blank, not a string or a UUID, not printable ASCII, or has
+                whitespace at either end
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             ConflictError: If subscriptions are off for the company or the customer already has this subscription (HTTP 409)
             RequestValidationError: If the server rejects a field, e.g. a currency that is not allowed (HTTP 422)
             RateLimitedError: If the rate limit is hit and the wait is too long to retry (HTTP 429)
             ServerError: If the gateway or the card processor fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
 
@@ -373,10 +399,23 @@ class AsyncPolakoClient:
             interval = BillingInterval(billing_interval)
         except ValueError:
             allowed = ", ".join(i.value for i in BillingInterval)
-            raise ValueError(f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}") from None
+            raise InvalidArgumentError(
+                f"invalid 'billing_interval' value {billing_interval!r}, must be one of {allowed}"
+            ) from None
 
-        if idempotency_key is not None and not idempotency_key.strip():
-            raise ValueError("'idempotency_key' must not be empty")
+        if isinstance(idempotency_key, UUID):
+            idempotency_key = str(idempotency_key)
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str):
+                raise InvalidHeaderValueError(
+                    f"'idempotency_key' must be a UUID or a string, got {type(idempotency_key).__name__}"
+                )
+            if not idempotency_key.strip():
+                raise InvalidHeaderValueError("'idempotency_key' must not be empty")
+            if not is_sendable_header_value(idempotency_key):
+                raise InvalidHeaderValueError(
+                    "'idempotency_key' must be printable ASCII without leading or trailing whitespace"
+                )
 
         request = SubscribeRequest(
             customer_email=customer_email,
@@ -408,8 +447,16 @@ class AsyncPolakoClient:
         """The header that identifies the platform on subscription calls; the client must be configured for them."""
         if self._company_id is None:
             raise ConfigurationError("'company_id' is required for subscriptions: pass it to the client constructor")
+        # The key itself is never put in a message: it would reach logs and tracebacks.
+        if self._api_key is not None and not isinstance(self._api_key, str):
+            raise ConfigurationError(f"'api_key' must be a string, got {type(self._api_key).__name__}")
         if not self._api_key:
             raise ConfigurationError("'api_key' is required for subscriptions: pass it to the client constructor")
+        if not is_sendable_header_value(self._api_key):
+            raise ConfigurationError(
+                "'api_key' must be printable ASCII without leading or trailing whitespace "
+                "(a key read from a file often ends with a newline: strip it)"
+            )
         return {"company_api_key": self._api_key}
 
     async def get_subscription(self, subscription_id: Union[UUID, str]) -> SubscriptionDetails:
@@ -427,14 +474,14 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
             HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
         subscription = check_subscription_id(subscription_id)
@@ -482,13 +529,13 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``limit`` is not from 1 to 100
+            InvalidArgumentError: Input validation errors, e.g. ``limit`` is not from 1 to 100
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key belongs to another company (HTTP 403)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
             HttpRequestError: If the answer cannot be read (the reason is its ``__cause__``)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         credentials = self._subscription_credentials()
         query = SubscriptionListQuery.from_arguments(
@@ -534,14 +581,14 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
             ConflictError: If subscriptions are off for the company or the subscription is not active (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("pause", subscription_id)
 
@@ -558,14 +605,14 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
             ConflictError: If subscriptions are off for the company or the subscription is not paused (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("resume", subscription_id)
 
@@ -582,14 +629,14 @@ class AsyncPolakoClient:
 
         Raises:
             ConfigurationError: Client configuration errors, e.g. the client has no ``company_id`` or ``api_key``
-            ValueError: Input validation errors, e.g. ``subscription_id`` is not a UUID
+            InvalidArgumentError: Input validation errors, e.g. ``subscription_id`` is not a UUID
             UnauthorizedError: If the API key is unknown (HTTP 401)
             ForbiddenError: If the API key or the subscription belongs to another company (HTTP 403)
             NotFoundError: If there is no such subscription (HTTP 404)
             ConflictError: If subscriptions are off for the company or the subscription is already cancelled (HTTP 409)
             RateLimitedError: If the rate limit is hit (HTTP 429)
             ServerError: If the gateway fails (HTTP 5xx)
-            HttpClientError: If there is a network error
+            HttpClientError: If there is a network error or a timeout, or the client cannot be set up
         """
         await self._change_subscription("cancel", subscription_id)
 

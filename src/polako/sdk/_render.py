@@ -4,6 +4,7 @@ import html
 from typing import Any, List
 from urllib.parse import urlparse
 
+from polako.sdk._exceptions import InvalidArgumentError
 from polako.sdk._subscription import FormPost, HppFormPost, RedirectForm, RegistrationForm
 
 FORM_ID = "polako-registration"
@@ -51,7 +52,7 @@ def render_registration_form(form: RegistrationForm, *, auto_submit: bool = True
 
     Raises:
         TypeError: If ``form`` is not a registration form
-        ValueError: If the address of the form is not an http or https URL
+        InvalidArgumentError: If the address of the form is not an http or https URL
     """
     if isinstance(form, FormPost):
         fields = [(name, getattr(form, attribute)) for name, attribute in _FORM_POST_INPUTS]
@@ -81,7 +82,7 @@ def _checked_address(action: Any) -> str:
         or parsed.scheme not in ("http", "https")
         or not parsed.netloc
     ):
-        raise ValueError("the registration address must be an http or https URL")
+        raise InvalidArgumentError("the registration address must be an http or https URL")
     return _escape(action)
 
 

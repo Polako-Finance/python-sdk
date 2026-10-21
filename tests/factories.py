@@ -393,6 +393,13 @@ def make_payment_url_response(**overrides: Any) -> Dict[str, Any]:
     return body
 
 
+def make_success_step(**overrides: Any) -> Dict[str, Any]:
+    """A step for `FakeGateway.sequence`: the gateway answers 200 with an order status."""
+    step: Dict[str, Any] = {"status": 200, "body": make_order_status_response()}
+    step.update(overrides)
+    return step
+
+
 def make_order_status_response(**overrides: Any) -> Dict[str, Any]:
     price = float(generate_random_decimal(3, 2))
     body: Dict[str, Any] = {

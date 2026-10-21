@@ -148,6 +148,6 @@ class Serializable:
         Override this method in subclasses to implement custom validation logic.
 
         Raises:
-            ValueError: If validation fails
+            InvalidArgumentError: If validation fails
         """
         pass
