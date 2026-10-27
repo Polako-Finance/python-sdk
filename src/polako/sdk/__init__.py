@@ -99,7 +99,7 @@ from polako.sdk._webhook import (
     parse_subscription_webhook,
 )
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 __all__ = [
     # Client

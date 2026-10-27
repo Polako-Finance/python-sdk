@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-28
+
+### Changed
+- A registration form (`FormPost`, `HppFormPost`, `RedirectForm`) turns back into what Polako Finance sent: `to_dict()` and `to_json()` now give its `type` (first) and the names of the wire, so a page that sends the customer on with the JavaScript SDK takes it as it is (`submitRegistrationForm`). Before, the `type` was left out, which that SDK refuses, and `FormPost.to_dict()` gave the Python names (`merchant_id` instead of `merchantId`). `to_dict(by_alias=False)` still gives the Python names, now with the `type`. `render_registration_form` does not change.
+
 ## [0.2.2] - 2026-10-27
 
 ### Changed
@@ -115,7 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: async client (httpx), HMAC-SHA256 signed `create_order`, payment callback parsing, PyPI publishing.
 
-[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.2...HEAD
+[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.3...HEAD
+[0.2.3]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.2...release-v0.2.3
 [0.2.2]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.1...release-v0.2.2
 [0.2.1]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.0...release-v0.2.1
 [0.2.0]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.9...release-v0.2.0

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, Union
+from typing import Any, ClassVar, Dict, Optional, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -18,8 +18,24 @@ class UnknownRegistrationFormError(ValueError):
     """The server returned a registration form of a type this SDK version does not know."""
 
 
+class _RegistrationFormBase(Serializable):
+    """
+    What the three registration forms share: turned back into a dict or JSON, a form is what the gateway sent.
+
+    That is the shape a page takes when it sends the customer on with the JavaScript SDK: the wire names and the
+    ``type``, which is a class attribute here, not a field.
+    """
+
+    serialize_by_alias: ClassVar[bool] = True
+    type: ClassVar[str]
+
+    def to_dict(self, by_alias: Optional[bool] = None) -> Dict[str, Any]:
+        """The form as the gateway sent it, ``type`` first. See :meth:`Serializable.to_dict` for ``by_alias``."""
+        return {"type": self.type, **super().to_dict(by_alias)}
+
+
 @dataclass
-class FormPost(Serializable):
+class FormPost(_RegistrationFormBase):
     """
     A form the merchant POSTs to the card processor to start the customer's 3DS registration.
 
@@ -41,7 +57,7 @@ class FormPost(Serializable):
 
 
 @dataclass
-class HppFormPost(Serializable):
+class HppFormPost(_RegistrationFormBase):
     """
     A form for a hosted payment page: ``action`` is the POST target, ``fields`` are the hidden inputs as given.
 
@@ -55,7 +71,7 @@ class HppFormPost(Serializable):
 
 
 @dataclass
-class RedirectForm(Serializable):
+class RedirectForm(_RegistrationFormBase):
     """
     A page the customer is redirected to for the 3DS registration (``action`` is its URL).
 

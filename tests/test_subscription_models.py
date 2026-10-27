@@ -70,6 +70,24 @@ def test_wire_type_iframe_is_a_redirect_form():
     assert form.action == raw["action"]
 
 
+FORM_RESPONSES = {
+    "form_post": make_form_post_response,
+    "hpp_form_post": make_hpp_form_response,
+    "iframe": make_redirect_form_response,
+}
+
+
+# A page that sends the customer on with the JavaScript SDK takes the form as the gateway sent it, type included.
+@pytest.mark.parametrize("make_raw", list(FORM_RESPONSES.values()), ids=list(FORM_RESPONSES))
+def test_a_form_turns_back_into_what_the_gateway_sent(make_raw):
+    raw = make_raw()
+
+    form = parse_registration_form(raw)
+
+    assert form.to_dict() == raw
+    assert json.loads(form.to_json()) == raw
+
+
 def test_unknown_form_type_names_the_type_and_the_known_ones():
     unknown = "qr_" + generate_readable_string(5)
 

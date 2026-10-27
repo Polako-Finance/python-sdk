@@ -11,6 +11,10 @@
     "hash": "cfb651ee8ab110a7",
     "check": "static"
   },
+  "README.md::Create a subscription and send the customer to the card registration::1": {
+    "hash": "0a91cc2c00baccc0",
+    "check": "static"
+  },
   "README.md::Read the webhooks::0": {
     "hash": "38a727d7546d45e8",
     "check": "static"
@@ -61,6 +65,10 @@
   },
   "README.pypi.md::Create a subscription and send the customer to the card registration::0": {
     "hash": "cfb651ee8ab110a7",
+    "check": "static"
+  },
+  "README.pypi.md::Create a subscription and send the customer to the card registration::1": {
+    "hash": "0a91cc2c00baccc0",
     "check": "static"
   },
   "README.pypi.md::Read the webhooks::0": {

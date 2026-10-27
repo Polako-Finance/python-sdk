@@ -1,6 +1,6 @@
 # python-sdk — Subscriptions: client-facing specification
 
-**Status: DRAFT v0.43** — agreed in principle on 2026-10-08. Implemented: creating a subscription (create, render the 3DS
+**Status: DRAFT v0.44** — agreed in principle on 2026-10-08. Implemented: creating a subscription (create, render the 3DS
 form, receive webhooks) and managing it (read, list, pause, resume, cancel) with the platform API key.
 
 ## How to use this document
@@ -59,7 +59,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 | Client | `PolakoClient(timeout=30.0, test_env=False, company_id: UUID \| None = None, api_key: str \| None = None)`; payment methods unchanged |
 | Create | `await create_subscription(*, customer_email, amount: Decimal, currency: str, billing_interval: BillingInterval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key: str \| UUID \| None = None) -> SubscriptionCreated` |
 | Result | `SubscriptionCreated`: `subscription_id`, `registration_form`, `idempotency_key` (the one used, also when generated) |
-| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response |
+| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response; `form.to_dict()` / `form.to_json()` give the form back as the gateway sent it (`type` included, camelCase names), for a page that sends the customer on with the JavaScript SDK (`submitRegistrationForm`) |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed`: `subscription_id` (a `UUID`), `merchant_subscription_ref`, `error_message`, `provider_name` (each may be `None` but the id), `signature_verified`; immutable. It has no event (`event = None`, unlike every lifecycle event) and `success = 0`; `order_id` is not kept because it always equals `subscription_id` |
 | Read | `await get_subscription(subscription_id: UUID \| str) -> SubscriptionDetails` |
@@ -297,3 +297,4 @@ charge in the history is what `refund_session` needs.
 | 2026-10-08 | Created from the gateway contract: create, registration forms and their rendering, webhook parsers, exceptions by status, retries for keyed requests, client-side argument checks |
 | 2026-10-09 | Management methods and their models; `NotFoundError`; one reader for times (always timezone-aware); retries limited to the statuses and failures above; read timeouts retried |
 | 2026-10-21 | v0.43 (SDK 0.2.1): typed argument errors (`InvalidArgumentError`, `InvalidHeaderValueError`); checks of the API key and of headers; messages of network failures; classification of TLS failures in retries; client set-up, closing and `async with` rules; limits of the refund reason; the text regrouped by topic |
+| 2026-10-28 | v0.44 (SDK 0.2.3): a registration form turns back into what the gateway sent (`to_dict()` / `to_json()` with `type` and camelCase names), to hand to a page that uses the JavaScript SDK; `FormPost.to_dict()` gave snake_case names without `type` |
