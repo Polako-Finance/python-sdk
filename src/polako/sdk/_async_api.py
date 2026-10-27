@@ -136,10 +136,10 @@ class AsyncPolakoClient:
         order.validate()
         customer.validate()
 
-        from polako.sdk._constants import CURRENCIES, DEFAULT_LANGUAGE
+        from polako.sdk._constants import DEFAULT_CURRENCY, DEFAULT_LANGUAGE
 
         # Prepare values
-        currency = order.currency or next(iter(CURRENCIES))
+        currency = order.currency or DEFAULT_CURRENCY
         language = order.language or DEFAULT_LANGUAGE
         total = order.total.quantize(Decimal("0.01"))
 

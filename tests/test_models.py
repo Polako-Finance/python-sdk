@@ -20,6 +20,12 @@ def test_valid_order_passes():
     make_order_details().validate()
 
 
+@pytest.mark.parametrize("currency", ["RSD", "RUB", "EUR", "USD"])
+def test_every_gateway_currency_is_accepted(currency):
+    # 0.2.2: the SDK used to allow RSD only, so a rouble or euro order never reached the gateway.
+    make_order_details(currency=currency).validate()
+
+
 def test_order_total_defaults_to_the_sum_of_the_items():
     order = make_order_details()
 
@@ -31,7 +37,7 @@ def test_order_total_defaults_to_the_sum_of_the_items():
     [
         ({"items": []}, "items"),
         ({"total": Decimal("0")}, "total"),
-        ({"currency": "EUR"}, "currency"),
+        ({"currency": "GBP"}, "currency"),
         ({"language": "de"}, "language"),
     ],
 )

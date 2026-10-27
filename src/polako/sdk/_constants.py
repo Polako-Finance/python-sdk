@@ -3,9 +3,12 @@
 from enum import Enum
 from typing import Literal, Set
 
-# Currency types and supported currencies
-TCurrency = Literal["RSD"]
-CURRENCIES: Set[TCurrency] = {"RSD"}
+# Currency types and supported currencies — the four the gateway accepts on a session
+# (``Currency`` in the gateway, 0.2.2). Which of them a given company can actually take
+# is decided by its payment options at session time, not here.
+TCurrency = Literal["RSD", "RUB", "EUR", "USD"]
+CURRENCIES: Set[TCurrency] = {"RSD", "RUB", "EUR", "USD"}
+DEFAULT_CURRENCY: TCurrency = "RSD"
 
 # Language types and supported languages
 TLanguage = Literal["sr", "en", "ru"]

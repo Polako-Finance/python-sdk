@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-27
+
+### Changed
+- An order may be in any of the four currencies the gateway takes on a session — `RSD`, `RUB`, `EUR`, `USD`. The SDK allowed `RSD` alone, so an order in another currency was refused by `OrderDetails.validate()` before any request was made. Whether a company can take a given currency is still decided by its payment options at session time. An order without a currency is still sent in `RSD` (`DEFAULT_CURRENCY`).
+
 ## [0.2.1] - 2026-10-21
 
 ### Added
@@ -110,7 +115,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial public release: async client (httpx), HMAC-SHA256 signed `create_order`, payment callback parsing, PyPI publishing.
 
-[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.1...HEAD
+[Unreleased]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.2...HEAD
+[0.2.2]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.1...release-v0.2.2
 [0.2.1]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.2.0...release-v0.2.1
 [0.2.0]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.9...release-v0.2.0
 [0.1.9]: https://github.com/Polako-Finance/python-sdk/compare/release-v0.1.8...release-v0.1.9
