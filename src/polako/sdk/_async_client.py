@@ -447,14 +447,14 @@ class AsyncHttpClient:
         """Exit async context manager.
 
         An exit without a matching entry (a shutdown hook that runs twice, a client that was never entered) does
-        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.3.0. If the merchant's
+        nothing but warn: ``RuntimeWarning`` now, and it will be a ``RuntimeError`` from 0.4.0. If the merchant's
         filters turn warnings into errors the warning raises, so that a test suite catches it, unless an error is
         propagating or being handled: then the warning is logged instead, because it would replace that error.
 
         A failure of closing the client does not raise: it is logged (see ``_close``).
         """
         if self._entered == 0:
-            message = "The client was exited more often than it was entered; this will be a RuntimeError from 0.3.0"
+            message = "The client was exited more often than it was entered; this will be a RuntimeError from 0.4.0"
             handling_an_error = exc_type is not None or sys.exc_info()[0] is not None  # before the handler below
             try:
                 warnings.warn(message, RuntimeWarning, stacklevel=_stacklevel_outside_sdk())

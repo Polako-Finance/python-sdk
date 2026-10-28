@@ -825,7 +825,7 @@ async def test_leaving_more_often_than_entering_warns_and_changes_nothing(gatewa
     gateway.respond(body=make_order_status_response())
     http = AsyncHttpClient(f"https://{generate_random_host()}")
 
-    with pytest.warns(RuntimeWarning, match="0.3.0"):
+    with pytest.warns(RuntimeWarning, match="0.4.0"):
         await http.__aexit__(None, None, None)
 
     async with http:

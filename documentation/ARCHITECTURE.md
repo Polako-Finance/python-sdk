@@ -92,7 +92,7 @@ Minimal — SDK targets payment-gateway endpoints which are NOT being extracted.
 
 ## Key Configuration
 
-- PyPI: `polako-finance` v0.2.2 (0.2.3 is in the repository and released once the JavaScript SDK's
+- PyPI: `polako-finance` v0.2.2 (0.3.0 is in the repository and released once the JavaScript SDK's
   `submitRegistrationForm` is on the production `sdk.js`)
 - Python: 3.10+ (CI matrix 3.10-3.13)
 - Dependencies: httpx[http2] >= 0.25, < 1.0; anyio >= 3 (its error classes; the SDK is checked on asyncio only)
