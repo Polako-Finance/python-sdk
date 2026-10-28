@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+To be released as 0.3.0 (the version in `pyproject.toml`) once the JavaScript SDK's `submitRegistrationForm` is on the
+production `sdk.js`. A minor, not a patch: `FormPost.to_dict()` changes the names it gives, so a release that a caller
+pinned as `^0.2` must not pick it up on its own.
+
+### Changed
+- **Breaking:** a registration form (`FormPost`, `HppFormPost`, `RedirectForm`) turns back into what Polako Finance sent: `to_dict()` and `to_json()` now give its `type` (first) and the names of the wire, so a page that sends the customer on with the JavaScript SDK takes it as it is (`submitRegistrationForm`). Before, the `type` was left out, which that SDK refuses, and `FormPost.to_dict()` gave the Python names (`merchant_id` instead of `merchantId`): code that reads `form.to_dict()["merchant_id"]` must read `form.merchant_id`, or `to_dict(by_alias=False)`, which still gives the Python names, now with the `type`.
+- `type` is now a field of each form, keyword-only, with the form's own kind as its default. `dataclasses.asdict` and web frameworks' encoders keep it too, but with the Python names: only `to_dict()` and `to_json()` give the wire names the JavaScript SDK reads. `FormPost(**form.to_dict(by_alias=False))` makes the same form again. A form made or read with another kind's `type` (`RedirectForm.from_dict(form_post_dict)`) raises `ValueError`; a dict without a `type` (what 0.2.2's `to_dict()` gave) is read as the model's own kind if it holds only that model's fields, and raises `ValueError` if it holds fields of another kind.
+- **Breaking:** a form is made only with every field given: a form built by hand with a `None` value (`FormPost(..., version=None)`) raises `ValueError`.
+- A registration form from the gateway is read strictly: a field missing, `null` or not text, or `fields` of an `hpp_form_post` that is not an object of text, makes `create_subscription` raise, as an answer without the form does, instead of returning a form with empty values. An `hpp_form_post` with no fields is read as it was, since the gateway allows it (the JavaScript SDK refuses such a form at the page). A form built or changed by hand is checked only for its `type` and for missing values, when it is made.
+- `to_dict()` of every model returns copies of the dicts, lists and tuples it holds, at any depth: changing the result (the `fields` of `HppFormPost.to_dict()`, the payload of an event in `SubscriptionDetails.to_dict()`) leaves the instance as it was. A tuple of models (`SubscriptionDetails.charge_history`, `events`) is written as a list of their dicts.
+- `to_json()` writes times and dates as ISO 8601 text, so it works for the subscription read models (`SubscriptionDetails`, `SubscriptionSummary`, `ChargeAttempt`, `SubscriptionEvent`), which raised `TypeError` on their times; what it writes reads back with `from_dict` into the same model. `render_registration_form` does not change.
+- Leaving `async with` more often than entering it still only emits a `RuntimeWarning`. 0.2.1 said it would be a `RuntimeError` from 0.3.0, when this work was to be 0.2.3 and 0.3.0 was the release after it; the deadline moves to 0.4.0 rather than falling due early, so the warning keeps the release it was given.
+
 ## [0.2.2] - 2026-10-27
 
 ### Changed

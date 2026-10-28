@@ -933,7 +933,7 @@ testing = ["coverage", "pytest", "pytest-benchmark"]
 
 [[package]]
 name = "polako-finance"
-version = "0.2.2"
+version = "0.3.0"
 description = "Official async Python SDK for Polako Finance payment gateway"
 optional = false
 python-versions = "^3.10"

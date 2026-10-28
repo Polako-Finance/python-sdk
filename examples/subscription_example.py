@@ -14,6 +14,9 @@ Start a subscription with:
     curl -X POST "http://localhost:8000/subscribe?email=jane.smith@example.com"
 
 and open the page it returns in a browser. Then look at http://localhost:8000/subscriptions.
+
+A page of your own that sends the customer on with the Polako Finance JavaScript SDK asks POST /api/subscribe instead:
+it gets the registration form as data and passes it to Polako().submitRegistrationForm(registrationForm).
 """
 
 from decimal import Decimal
@@ -33,6 +36,7 @@ from polako.sdk import (
     RateLimitedError,
     RequestValidationError,
     SubscriptionCancelled,
+    SubscriptionCreated,
     WebhookPayloadError,
     WebhookSignatureError,
     parse_registration_failed,
@@ -54,8 +58,7 @@ def remember(subscription_id: UUID, **facts: str) -> None:
     SUBSCRIPTIONS.setdefault(str(subscription_id), {}).update(facts)
 
 
-@app.post("/subscribe")
-async def subscribe(email: str):
+async def create_subscription_for(email: str) -> SubscriptionCreated:
     # Make the key first and keep it with your order. If this server stops before it hears the answer, ask again with
     # the same key and the gateway returns the same subscription instead of creating a second one.
     key = str(uuid4())
@@ -84,8 +87,25 @@ async def subscribe(email: str):
             raise HTTPException(status_code=503, detail="The payment gateway cannot be reached")
 
     remember(created.subscription_id, email=email, status="waiting for the card registration", idempotency_key=key)
+    return created
+
+
+@app.post("/subscribe")
+async def subscribe(email: str):
+    created = await create_subscription_for(email)
     # A page that sends the customer to the card registration. It is only the customer who completes it.
     return HTMLResponse(render_registration_form(created.registration_form))
+
+
+@app.post("/api/subscribe")
+async def subscribe_from_the_page(email: str):
+    created = await create_subscription_for(email)
+    # The form as Polako Finance sent it, type first: the page passes it to Polako().submitRegistrationForm as it is.
+    # The subscription ID lets the page show the subscription later.
+    return {
+        "subscriptionId": str(created.subscription_id),
+        "registrationForm": created.registration_form.to_dict(),
+    }
 
 
 @app.get("/subscribe/success")
