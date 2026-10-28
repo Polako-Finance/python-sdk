@@ -102,6 +102,11 @@ def read_mapping(value: Any) -> Dict[str, Any]:
     return value
 
 
+def read_text_mapping(value: Any) -> Dict[str, str]:
+    """An object whose every value is text; a copy of it."""
+    return {read_text(name): read_text(text) for name, text in read_mapping(value).items()}
+
+
 def known_or_raw(enum: Type[Enum]) -> Callable[[Any], Any]:
     """The enum member for a known value, the raw text for an unknown one (the server may add values)."""
 

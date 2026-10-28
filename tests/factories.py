@@ -128,6 +128,14 @@ def make_redirect_form_response(**overrides: Any) -> Dict[str, Any]:
     return form
 
 
+FORM_RESPONSE_BUILDERS = {
+    "form_post": make_form_post_response,
+    "hpp_form_post": make_hpp_form_response,
+    "iframe": make_redirect_form_response,
+}
+"""A builder of the gateway's registration form for each wire type, the one table the tests share."""
+
+
 def make_subscribe_response(form: Optional[Dict[str, Any]] = None, **overrides: Any) -> Dict[str, Any]:
     """The 201 body of the create call; the form defaults to a `form_post`."""
     response: Dict[str, Any] = {

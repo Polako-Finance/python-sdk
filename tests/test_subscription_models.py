@@ -1,6 +1,7 @@
 """Subscription models, enums and registration form parsing."""
 
 import json
+from dataclasses import asdict, fields
 from decimal import Decimal
 from uuid import UUID
 
@@ -8,8 +9,9 @@ import pytest
 
 import polako.sdk as sdk
 from polako.sdk import BillingInterval, FormPost, HppFormPost, RedirectForm, UnknownRegistrationFormError
-from polako.sdk._subscription import SubscribeResponse, parse_registration_form
+from polako.sdk._subscription import _FORMS_BY_TYPE, SubscribeResponse, parse_registration_form
 from tests.factories import (
+    FORM_RESPONSE_BUILDERS,
     make_form_post_response,
     make_hpp_form_response,
     make_redirect_form_response,
@@ -70,15 +72,15 @@ def test_wire_type_iframe_is_a_redirect_form():
     assert form.action == raw["action"]
 
 
-FORM_RESPONSES = {
-    "form_post": make_form_post_response,
-    "hpp_form_post": make_hpp_form_response,
-    "iframe": make_redirect_form_response,
-}
+FORM_KINDS = pytest.mark.parametrize("make_raw", list(FORM_RESPONSE_BUILDERS.values()), ids=list(FORM_RESPONSE_BUILDERS))
+
+
+def test_the_tests_build_every_kind_of_form_the_sdk_reads():
+    assert set(FORM_RESPONSE_BUILDERS) == set(_FORMS_BY_TYPE)
 
 
 # A page that sends the customer on with the JavaScript SDK takes the form as the gateway sent it, type included.
-@pytest.mark.parametrize("make_raw", list(FORM_RESPONSES.values()), ids=list(FORM_RESPONSES))
+@FORM_KINDS
 def test_a_form_turns_back_into_what_the_gateway_sent(make_raw):
     raw = make_raw()
 
@@ -86,6 +88,98 @@ def test_a_form_turns_back_into_what_the_gateway_sent(make_raw):
 
     assert form.to_dict() == raw
     assert json.loads(form.to_json()) == raw
+    assert next(iter(form.to_dict())) == "type"
+
+
+@FORM_KINDS
+def test_a_form_with_python_names_keeps_its_type_first(make_raw):
+    form = parse_registration_form(make_raw())
+
+    as_python = form.to_dict(by_alias=False)
+
+    assert as_python == {"type": form.type, **{f.name: getattr(form, f.name) for f in fields(form) if f.name != "type"}}
+    assert next(iter(as_python)) == "type"
+
+
+# Serializers that walk the fields of a dataclass (dataclasses.asdict, FastAPI's encoder) keep the type too.
+@FORM_KINDS
+def test_a_form_carries_its_type_as_a_field(make_raw):
+    raw = make_raw()
+
+    form = parse_registration_form(raw)
+
+    assert asdict(form)["type"] == raw["type"]
+
+
+@FORM_KINDS
+def test_a_form_is_made_again_from_its_python_names(make_raw):
+    form = parse_registration_form(make_raw())
+
+    assert type(form)(**form.to_dict(by_alias=False)) == form
+
+
+# A form read back as another kind is refused, not turned into a form of empty or wrong values.
+@pytest.mark.parametrize(
+    "model, make_raw",
+    [
+        (RedirectForm, make_form_post_response),
+        (FormPost, make_hpp_form_response),
+        (HppFormPost, make_redirect_form_response),
+    ],
+    ids=["form_post as iframe", "hpp_form_post as form_post", "iframe as hpp_form_post"],
+)
+def test_a_form_of_another_kind_is_refused(model, make_raw):
+    with pytest.raises(ValueError, match="type"):
+        model.from_dict(make_raw())
+
+
+@pytest.mark.parametrize("model", [FormPost, HppFormPost, RedirectForm])
+def test_a_form_is_made_only_with_its_own_type(model):
+    other = next(kind for kind in _FORMS_BY_TYPE if kind != model.type)
+    raw = FORM_RESPONSE_BUILDERS[model.type]()
+
+    with pytest.raises(ValueError, match="type"):
+        model.from_dict({**raw, "type": other})
+
+
+# The dict handed to a page is a copy: changing it (to hide a value before logging it) leaves the form as it was.
+def test_the_fields_of_an_hpp_form_dict_are_a_copy():
+    raw = make_hpp_form_response()
+    sent = dict(raw["fields"])
+    form = parse_registration_form(raw)
+
+    handed_out = form.to_dict()
+    handed_out["fields"][next(iter(sent))] = generate_readable_string(8)
+    handed_out["fields"].clear()
+
+    assert form.fields == sent
+    assert form.to_dict()["fields"] == sent
+
+
+# Half a form from the gateway is refused when the subscription is created, before any page gets nulls from it.
+HALF_FORMS = {
+    "form_post without a field": lambda: _without(make_form_post_response(), "signature"),
+    "form_post with a null field": lambda: make_form_post_response(orderId=None),
+    "form_post with a number": lambda: make_form_post_response(totalAmount=12345),
+    "hpp_form_post without fields": lambda: _without(make_hpp_form_response(), "fields"),
+    "hpp_form_post with fields that are not an object": lambda: make_hpp_form_response(fields=["a"]),
+    "hpp_form_post with a value that is not text": lambda: make_hpp_form_response(fields={"a": 1}),
+    "iframe without an action": lambda: _without(make_redirect_form_response(), "action"),
+    "iframe with a null action": lambda: make_redirect_form_response(action=None),
+}
+
+
+def _without(raw, name):
+    return {key: value for key, value in raw.items() if key != name}
+
+
+@pytest.mark.parametrize("make_half", list(HALF_FORMS.values()), ids=list(HALF_FORMS))
+def test_half_a_form_is_refused(make_half):
+    with pytest.raises(ValueError):
+        parse_registration_form(make_half())
+
+    with pytest.raises(ValueError):
+        SubscribeResponse.from_json(json.dumps(make_subscribe_response(make_half())))
 
 
 def test_unknown_form_type_names_the_type_and_the_known_ones():

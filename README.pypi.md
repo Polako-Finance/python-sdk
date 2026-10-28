@@ -202,26 +202,23 @@ async def subscribe():
   `auto_submit=False` if your site forbids inline scripts: the page then holds no script and the customer presses the button.
 
 If your page sends the customer on itself, with the Polako Finance JavaScript SDK, hand it the form as data instead of a
-page. `registration_form.to_dict()` is the form as Polako Finance sent it, `type` included; the page passes it to
-`submitRegistrationForm` as it is:
+page (from version 0.2.3 on: earlier versions leave out the `type`, and the JavaScript SDK refuses such a form).
+`registration_form.to_dict()` is the form as Polako Finance sent it, `type` first; put it into your JSON response as
+it is, and the page passes it to `submitRegistrationForm`:
 
 ```python
 @app.post("/api/subscribe")
 async def subscribe_from_the_page():
+    key = str(uuid4())  # keep it with your order before the call, as above
     async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
-        created = await client.create_subscription(
-            customer_email="jane.smith@example.com",
-            amount=Decimal("990.00"),
-            currency="RSD",
-            billing_interval=BillingInterval.MONTHLY,
-            merchant_subscription_ref="plan-pro-monthly",
-            success_url="https://shop.example.com/subscribe/success",
-            cancel_url="https://shop.example.com/subscribe/cancel",
-            error_url="https://shop.example.com/polako/subscription-error",
-        )
+        created = await client.create_subscription(...)  # the same arguments as above, idempotency_key=key included
     # In the page: Polako().submitRegistrationForm(registrationForm)
     return {"registrationForm": created.registration_form.to_dict()}
 ```
+
+`to_json()` gives the same form as a JSON string: a whole response body, not a value to put inside another JSON object
+(the page would get a string, not the form). To write the form into a page instead, encode it for an inline
+`<script>` (your template engine's JSON filter): the values come from the card processor and are not HTML-safe.
 
 ### Read the webhooks
 
@@ -566,7 +563,7 @@ Async client for Polako Finance API.
 - `parse_subscription_webhook(body, signature, api_key)` - Check and read a subscription webhook: `ChargeSucceeded`, `ChargeFailed`, `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent`
 - `parse_registration_failed(body, signature, api_key, *, allow_unsigned=False)` - Check and read the notification about a failed card registration
 - `render_registration_form(form, *, auto_submit=True)` - Turn a registration form into an HTML page for the customer
-- `registration_form.to_dict()`, `registration_form.to_json()` - The registration form as Polako Finance sent it, for a page that uses the JavaScript SDK
+- `registration_form.to_dict()` - The registration form as Polako Finance sent it, `type` first (from 0.2.3), to return to a page that uses the JavaScript SDK
 
 #### Context Manager
 

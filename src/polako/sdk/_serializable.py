@@ -112,6 +112,9 @@ class Serializable:
                 result[key] = [cast(Serializable, v).to_dict(by_alias) if is_dataclass(v) else v for v in value]
             elif is_dataclass(value):
                 result[key] = cast(Serializable, value).to_dict(by_alias)
+            elif isinstance(value, dict):
+                # A copy: changing the result must not change the instance.
+                result[key] = dict(value)
             else:
                 result[key] = value
         return result

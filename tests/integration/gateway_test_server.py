@@ -29,7 +29,7 @@ from uuid import UUID, uuid4
 import aiohttp
 from aiohttp import web
 
-from tests.factories import make_form_post_response, make_hpp_form_response, make_redirect_form_response
+from tests.factories import FORM_RESPONSE_BUILDERS
 from tests.generators import generate_api_key, generate_random_digit_string, generate_readable_string
 
 KNOWN_CURRENCIES = ("RSD", "RUB", "EUR", "USD")
@@ -54,12 +54,6 @@ FIELDS = [
     ("cancelUrl", "cancel_url"),
     ("errorUrl", "error_url"),
 ]
-
-FORM_BUILDERS = {
-    "form_post": make_form_post_response,
-    "hpp_form_post": make_hpp_form_response,
-    "iframe": make_redirect_form_response,
-}
 
 
 @dataclass
@@ -453,7 +447,7 @@ class GatewayTestServer:
             id=uuid4(),
             company_id=company_id,
             platform=platform if platform.links_subscriptions else None,
-            form=FORM_BUILDERS[self.form_type](),
+            form=FORM_RESPONSE_BUILDERS[self.form_type](),
             **fields,
         )
         self.subscriptions[subscription.id] = subscription

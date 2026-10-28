@@ -1,13 +1,14 @@
 """Models for creating a subscription: the request, the response and the three kinds of registration form."""
 
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, Optional, Union
+from typing import Any, ClassVar, Dict, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
 from polako.sdk._constants import BillingInterval
-from polako.sdk._decoding import StrictModel, read_uuid, wire_field
+from polako.sdk._decoding import StrictModel, read_text, read_text_mapping, read_uuid, wire_field
 from polako.sdk._exceptions import InvalidArgumentError
 from polako.sdk._serializable import Serializable
 
@@ -18,20 +19,30 @@ class UnknownRegistrationFormError(ValueError):
     """The server returned a registration form of a type this SDK version does not know."""
 
 
+@dataclass
 class _RegistrationFormBase(Serializable):
     """
-    What the three registration forms share: turned back into a dict or JSON, a form is what the gateway sent.
+    What the three registration forms share.
 
-    That is the shape a page takes when it sends the customer on with the JavaScript SDK: the wire names and the
-    ``type``, which is a class attribute here, not a field.
+    ``type`` is a field, the first one, so every serializer that walks the fields (``to_dict``, ``to_json``,
+    ``dataclasses.asdict``, a web framework's encoder) keeps it: turned back into a dict or JSON, a form is what the
+    gateway sent, the shape a page takes when it sends the customer on with the JavaScript SDK. Each kind gives its
+    own type as the default, and a form is made only with its own type: read back as another kind, it is refused.
+    Read from the gateway (``from_dict``), every field must be there and be text.
     """
 
     serialize_by_alias: ClassVar[bool] = True
-    type: ClassVar[str]
 
-    def to_dict(self, by_alias: Optional[bool] = None) -> Dict[str, Any]:
-        """The form as the gateway sent it, ``type`` first. See :meth:`Serializable.to_dict` for ``by_alias``."""
-        return {"type": self.type, **super().to_dict(by_alias)}
+    type: str = field(default="", kw_only=True)
+
+    def __post_init__(self) -> None:
+        name = self.__class__.__name__
+        own = self.__class__.__dataclass_fields__["type"].default
+        if self.type != own:
+            raise ValueError(f"{name}: the type of this form is {own!r}, not {self.type!r}")
+        missing = [f.name for f in dataclass_fields(self) if getattr(self, f.name) is None]
+        if missing:
+            raise ValueError(f"{name}: missing {', '.join(missing)}")
 
 
 @dataclass
@@ -42,18 +53,18 @@ class FormPost(_RegistrationFormBase):
     Render it as an HTML form with ``action`` as the target and one hidden input per field.
     """
 
-    type: ClassVar[str] = "form_post"
+    type: str = field(default="form_post", kw_only=True)
 
-    action: str
-    version: str
-    merchant_id: str = field(metadata={"alias": "merchantId"})
-    terminal_id: str = field(metadata={"alias": "terminalId"})
-    total_amount: str = field(metadata={"alias": "totalAmount"})
-    currency: str
-    locale: str
-    purchase_time: str = field(metadata={"alias": "purchaseTime"})
-    order_id: str = field(metadata={"alias": "orderId"})
-    signature: str
+    action: str = wire_field(read_text)
+    version: str = wire_field(read_text)
+    merchant_id: str = wire_field(read_text, "merchantId")
+    terminal_id: str = wire_field(read_text, "terminalId")
+    total_amount: str = wire_field(read_text, "totalAmount")
+    currency: str = wire_field(read_text)
+    locale: str = wire_field(read_text)
+    purchase_time: str = wire_field(read_text, "purchaseTime")
+    order_id: str = wire_field(read_text, "orderId")
+    signature: str = wire_field(read_text)
 
 
 @dataclass
@@ -64,10 +75,10 @@ class HppFormPost(_RegistrationFormBase):
     The set of fields is defined by the provider and can differ between providers.
     """
 
-    type: ClassVar[str] = "hpp_form_post"
+    type: str = field(default="hpp_form_post", kw_only=True)
 
-    action: str
-    fields: Dict[str, str]
+    action: str = wire_field(read_text)
+    fields: Dict[str, str] = wire_field(read_text_mapping)
 
 
 @dataclass
@@ -78,9 +89,9 @@ class RedirectForm(_RegistrationFormBase):
     On the wire this form has the type ``iframe``.
     """
 
-    type: ClassVar[str] = "iframe"
+    type: str = field(default="iframe", kw_only=True)
 
-    action: str
+    action: str = wire_field(read_text)
 
 
 RegistrationForm = Union[FormPost, HppFormPost, RedirectForm]

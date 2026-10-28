@@ -49,8 +49,10 @@ Out: retries of management methods and of payment methods, unification of the tw
 ## Acceptance example
 
 `examples/subscription_example.py` is a complete merchant server: create a subscription, return the card registration page,
-read the webhooks and the registration-failure notification, with the SDK's errors turned into HTTP answers. The
-`Subscriptions` section of the README shows the same flow in pieces. A change to the flow is made here first.
+or the registration form as data for a page that sends the customer on with the JavaScript SDK (`/api/subscribe`,
+`registration_form.to_dict()`), read the webhooks and the registration-failure notification, with the SDK's errors
+turned into HTTP answers. The `Subscriptions` section of the README shows the same flow in pieces. A change to the flow
+is made here first.
 
 ## Interface
 
@@ -59,7 +61,7 @@ read the webhooks and the registration-failure notification, with the SDK's erro
 | Client | `PolakoClient(timeout=30.0, test_env=False, company_id: UUID \| None = None, api_key: str \| None = None)`; payment methods unchanged |
 | Create | `await create_subscription(*, customer_email, amount: Decimal, currency: str, billing_interval: BillingInterval, merchant_subscription_ref, success_url, cancel_url, error_url, idempotency_key: str \| UUID \| None = None) -> SubscriptionCreated` |
 | Result | `SubscriptionCreated`: `subscription_id`, `registration_form`, `idempotency_key` (the one used, also when generated) |
-| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response; `form.to_dict()` / `form.to_json()` give the form back as the gateway sent it (`type` included, camelCase names), for a page that sends the customer on with the JavaScript SDK (`submitRegistrationForm`) |
+| Form | `registration_form` is `FormPost`, `HppFormPost` or `RedirectForm` (wire `type` is `iframe`); `render_registration_form(form, *, auto_submit=True) -> str` returns a complete HTML page for the merchant to return as an HTML response; `form.to_dict()` / `form.to_json()` give the form back as the gateway sent it (`type` first, camelCase names), for a page that sends the customer on with the JavaScript SDK (`submitRegistrationForm`); `type` is a keyword-only field of each form with its own kind as the default, so `dataclasses.asdict` keeps it and `Form(**form.to_dict(by_alias=False))` makes the same form; a form made or read with another kind's `type` raises `ValueError`; the dicts a form returns are copies |
 | Events | `parse_subscription_webhook(body: bytes \| str, signature: str \| None, api_key: str)` returns `ChargeSucceeded` (`amount`, `currency`, `charged_at`), `ChargeFailed` (`error_class`), `DroppedExternally`, `SubscriptionCancelled` or `UnknownSubscriptionEvent` (`event`, `data`); all carry `subscription_id` (a `UUID`) and `merchant_subscription_ref` (may be `None`), are immutable, and are covered by the `SubscriptionWebhookEvent` type alias |
 | Registration failure | `parse_registration_failed(body, signature: str \| None, api_key, *, allow_unsigned=False) -> RegistrationFailed`: `subscription_id` (a `UUID`), `merchant_subscription_ref`, `error_message`, `provider_name` (each may be `None` but the id), `signature_verified`; immutable. It has no event (`event = None`, unlike every lifecycle event) and `success = 0`; `order_id` is not kept because it always equals `subscription_id` |
 | Read | `await get_subscription(subscription_id: UUID \| str) -> SubscriptionDetails` |
@@ -96,7 +98,8 @@ read the webhooks and the registration-failure notification, with the SDK's erro
   value an `InvalidHeaderValueError`; the message names the header, never the value.
 - `SubscriptionCreated` is immutable. The client keeps the API key private and hides it in `repr`.
 - An answer to a subscription request that lacks the subscription ID or the registration form, or holds a value of the
-  wrong kind, is an `HttpRequestError` whose cause is the reason; no result is built from half an answer.
+  wrong kind, is an `HttpRequestError` whose cause is the reason; no result is built from half an answer. That includes
+  half a form: every field of the form must be there and be text, and `fields` of an `hpp_form_post` an object of text.
 
 ### Webhooks
 
@@ -297,4 +300,4 @@ charge in the history is what `refund_session` needs.
 | 2026-10-08 | Created from the gateway contract: create, registration forms and their rendering, webhook parsers, exceptions by status, retries for keyed requests, client-side argument checks |
 | 2026-10-09 | Management methods and their models; `NotFoundError`; one reader for times (always timezone-aware); retries limited to the statuses and failures above; read timeouts retried |
 | 2026-10-21 | v0.43 (SDK 0.2.1): typed argument errors (`InvalidArgumentError`, `InvalidHeaderValueError`); checks of the API key and of headers; messages of network failures; classification of TLS failures in retries; client set-up, closing and `async with` rules; limits of the refund reason; the text regrouped by topic |
-| 2026-10-28 | v0.44 (SDK 0.2.3): a registration form turns back into what the gateway sent (`to_dict()` / `to_json()` with `type` and camelCase names), to hand to a page that uses the JavaScript SDK; `FormPost.to_dict()` gave snake_case names without `type` |
+| 2026-10-28 | v0.44 (SDK 0.2.3): a registration form turns back into what the gateway sent (`to_dict()` / `to_json()` with `type` and camelCase names), to hand to a page that uses the JavaScript SDK; `FormPost.to_dict()` gave snake_case names without `type`. After the review of the PR: `type` is a field (kept by every serializer, checked against the kind), the forms are read strictly, `to_dict()` returns copies, the acceptance example has the JavaScript SDK's endpoint |
