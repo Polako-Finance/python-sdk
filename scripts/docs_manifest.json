@@ -8,11 +8,11 @@
     "check": "static"
   },
   "README.md::Create a subscription and send the customer to the card registration::0": {
-    "hash": "cfb651ee8ab110a7",
+    "hash": "c1afc427577e216f",
     "check": "static"
   },
   "README.md::Create a subscription and send the customer to the card registration::1": {
-    "hash": "a6a1d2e43f86f5a5",
+    "hash": "fd0fda8385a3bf96",
     "check": "static"
   },
   "README.md::Read the webhooks::0": {
@@ -64,11 +64,11 @@
     "check": "static"
   },
   "README.pypi.md::Create a subscription and send the customer to the card registration::0": {
-    "hash": "cfb651ee8ab110a7",
+    "hash": "c1afc427577e216f",
     "check": "static"
   },
   "README.pypi.md::Create a subscription and send the customer to the card registration::1": {
-    "hash": "a6a1d2e43f86f5a5",
+    "hash": "fd0fda8385a3bf96",
     "check": "static"
   },
   "README.pypi.md::Read the webhooks::0": {
@@ -136,7 +136,7 @@
     "check": "static"
   },
   "examples/subscription_example.py::file::0": {
-    "hash": "bed1f14069e9d11b",
+    "hash": "c341b1b2cffed398",
     "check": "static"
   },
   "examples/subscription_management_example.py::file::0": {

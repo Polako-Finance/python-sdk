@@ -3,16 +3,18 @@
 from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, Union
+from typing import Any, ClassVar, Dict, Type, TypeVar, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
 from polako.sdk._constants import BillingInterval
-from polako.sdk._decoding import StrictModel, read_text, read_text_mapping, read_uuid, wire_field
+from polako.sdk._decoding import StrictModel, read_text, read_text_mapping, read_uuid, refuse_missing, wire_field
 from polako.sdk._exceptions import InvalidArgumentError
 from polako.sdk._serializable import Serializable
 
 MERCHANT_REF_MAX_LENGTH = 128
+
+_Form = TypeVar("_Form", bound="_RegistrationFormBase")
 
 
 class UnknownRegistrationFormError(ValueError):
@@ -24,25 +26,47 @@ class _RegistrationFormBase(Serializable):
     """
     What the three registration forms share.
 
-    ``type`` is a field, the first one, so every serializer that walks the fields (``to_dict``, ``to_json``,
-    ``dataclasses.asdict``, a web framework's encoder) keeps it: turned back into a dict or JSON, a form is what the
-    gateway sent, the shape a page takes when it sends the customer on with the JavaScript SDK. Each kind gives its
-    own type as the default, and a form is made only with its own type: read back as another kind, it is refused.
-    Read from the gateway (``from_dict``), every field must be there and be text.
+    ``type`` is a field, the first one, so every serializer that walks the fields keeps it (``dataclasses.asdict`` and
+    a web framework's encoder too, with the Python names). ``to_dict()`` and ``to_json()`` give the form as the gateway
+    sent it, ``type`` first and the wire names: the shape a page takes when it sends the customer on with the
+    JavaScript SDK. Each kind gives its own type as the default; a form is made, or read back, only with its own type
+    or none (a dict without one, as 0.2.2's ``to_dict()`` gave, is read as the model's own kind if it holds only that
+    model's fields).
+
+    Read from the gateway (``from_dict``), every field must be there and be text (an ``hpp_form_post`` may have no
+    fields, as the gateway allows; the JavaScript SDK refuses such a form). A form built or changed by hand is checked
+    only for its ``type`` and for missing values, when it is made.
     """
 
     serialize_by_alias: ClassVar[bool] = True
 
     type: str = field(default="", kw_only=True)
 
+    @classmethod
+    def _own_type(cls) -> str:
+        return str(cls.__dataclass_fields__["type"].default)  # type: ignore[attr-defined]
+
+    @classmethod
+    def from_dict(cls: Type[_Form], data: dict) -> _Form:
+        """
+        Read a form; a dict without a ``type`` is read as this model's own kind, if it holds only this model's fields.
+
+        Raises:
+            ValueError: If the form is of another kind (by its ``type``, or without one, by its fields), or half a form
+        """
+        if data.get("type") is None:
+            known = {name for f in dataclass_fields(cls) for name in (f.name, f.metadata.get("alias")) if name}
+            foreign = sorted(set(data) - known)
+            if foreign:
+                raise ValueError(f"{cls.__name__}: a form without a type, with fields of another kind: {foreign}")
+            data = {**data, "type": cls._own_type()}  # type: ignore[attr-defined]
+        return super().from_dict(data)  # type: ignore[misc]
+
     def __post_init__(self) -> None:
-        name = self.__class__.__name__
-        own = self.__class__.__dataclass_fields__["type"].default
+        own = self._own_type()
         if self.type != own:
-            raise ValueError(f"{name}: the type of this form is {own!r}, not {self.type!r}")
-        missing = [f.name for f in dataclass_fields(self) if getattr(self, f.name) is None]
-        if missing:
-            raise ValueError(f"{name}: missing {', '.join(missing)}")
+            raise ValueError(f"{self.__class__.__name__}: the type of this form is {own!r}, not {self.type!r}")
+        refuse_missing(self, every_field=True)
 
 
 @dataclass

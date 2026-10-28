@@ -1,5 +1,6 @@
 """The models of the subscription read API, decoded from what the server sends."""
 
+import json
 import random
 import re
 from dataclasses import FrozenInstanceError
@@ -37,6 +38,25 @@ from tests.generators import generate_aware_datetime, generate_naive_datetime, g
 
 def instant(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+# to_json() of a read model is JSON: times and dates as ISO 8601 text, money as text, nested models and tuples as
+# objects and lists, so it reads back into the same model.
+@pytest.mark.parametrize(
+    "model, make_payload",
+    [
+        (SubscriptionDetails, make_subscription_detail_payload),
+        (SubscriptionSummary, make_subscription_summary_payload),
+        (ChargeAttempt, make_charge_attempt_payload),
+        (SubscriptionEvent, make_subscription_event_payload),
+        (SubscriptionListResponse, make_subscription_page_payload),
+    ],
+    ids=["details", "summary", "charge attempt", "event", "page"],
+)
+def test_a_read_model_is_written_as_json_and_read_back(model, make_payload):
+    read = model.from_dict(make_payload())
+
+    assert model.from_dict(json.loads(read.to_json())) == read
 
 
 def snake_case(wire_name: str) -> str:

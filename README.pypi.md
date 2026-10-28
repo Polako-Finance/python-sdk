@@ -164,12 +164,11 @@ API_KEY = "your-secret-key"  # the API key of your platform
 app = FastAPI()
 
 
-@app.post("/subscribe")
-async def subscribe():
+async def create_subscription_for(email: str):
     key = str(uuid4())  # keep it with your order before the call: repeating a request with the same key is safe
     async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
-        created = await client.create_subscription(
-            customer_email="jane.smith@example.com",
+        return await client.create_subscription(
+            customer_email=email,
             amount=Decimal("990.00"),
             currency="RSD",
             billing_interval=BillingInterval.MONTHLY,
@@ -179,6 +178,11 @@ async def subscribe():
             error_url="https://shop.example.com/polako/subscription-error",
             idempotency_key=key,
         )
+
+
+@app.post("/subscribe")
+async def subscribe(email: str):
+    created = await create_subscription_for(email)
     return HTMLResponse(render_registration_form(created.registration_form))
 ```
 
@@ -204,16 +208,18 @@ async def subscribe():
 If your page sends the customer on itself, with the Polako Finance JavaScript SDK, hand it the form as data instead of a
 page (from version 0.2.3 on: earlier versions leave out the `type`, and the JavaScript SDK refuses such a form).
 `registration_form.to_dict()` is the form as Polako Finance sent it, `type` first; put it into your JSON response as
-it is, and the page passes it to `submitRegistrationForm`:
+it is, and the page passes it to `submitRegistrationForm`. Hand the page the subscription ID too, if it shows the
+subscription later:
 
 ```python
 @app.post("/api/subscribe")
-async def subscribe_from_the_page():
-    key = str(uuid4())  # keep it with your order before the call, as above
-    async with PolakoClient(test_env=True, company_id=COMPANY_ID, api_key=API_KEY) as client:
-        created = await client.create_subscription(...)  # the same arguments as above, idempotency_key=key included
+async def subscribe_from_the_page(email: str):
+    created = await create_subscription_for(email)
     # In the page: Polako().submitRegistrationForm(registrationForm)
-    return {"registrationForm": created.registration_form.to_dict()}
+    return {
+        "subscriptionId": str(created.subscription_id),
+        "registrationForm": created.registration_form.to_dict(),
+    }
 ```
 
 `to_json()` gives the same form as a JSON string: a whole response body, not a value to put inside another JSON object

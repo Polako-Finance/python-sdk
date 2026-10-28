@@ -1,7 +1,9 @@
 """Base serializable class for data models."""
 
+import copy
 import json
 from dataclasses import fields, is_dataclass
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, Optional, Type, TypeVar, Union, cast, get_args, get_origin
 from uuid import UUID
@@ -10,14 +12,16 @@ T = TypeVar("T", bound="Serializable")
 
 
 class CustomJSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles UUID and Decimal types."""
+    """Custom JSON encoder that handles UUID, Decimal, datetime and date types."""
 
     def default(self, obj):
-        """Convert UUID and Decimal to JSON-serializable types."""
+        """Convert UUID and Decimal to their text, a datetime or a date to ISO 8601 text (what the SDK reads back)."""
         if isinstance(obj, UUID):
             return str(obj)
         elif isinstance(obj, Decimal):
             return str(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
         return super().default(obj)
 
 
@@ -108,13 +112,14 @@ class Serializable:
         for f in fields(self):  # type: ignore[arg-type]
             value = getattr(self, f.name)
             key = (f.metadata.get("alias") if use_alias else None) or f.name
-            if isinstance(value, list):
-                result[key] = [cast(Serializable, v).to_dict(by_alias) if is_dataclass(v) else v for v in value]
+            # Copies all the way down: changing the result, at any depth, must not change the instance.
+            # A tuple (the read models hold their lists as tuples) is written as a list, as JSON has no tuples.
+            if isinstance(value, (list, tuple)):
+                result[key] = [cast(Serializable, v).to_dict(by_alias) if is_dataclass(v) else copy.deepcopy(v) for v in value]
             elif is_dataclass(value):
                 result[key] = cast(Serializable, value).to_dict(by_alias)
             elif isinstance(value, dict):
-                # A copy: changing the result must not change the instance.
-                result[key] = dict(value)
+                result[key] = copy.deepcopy(value)
             else:
                 result[key] = value
         return result

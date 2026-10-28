@@ -1,5 +1,6 @@
 """Wire aliases and a decoder hook in Serializable, without changing existing behaviour."""
 
+import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import ClassVar, List, Optional
@@ -149,6 +150,39 @@ def test_decoder_hook_error_is_not_swallowed():
 
 def test_decoder_is_skipped_for_a_missing_value():
     assert Drawing.from_dict({}).shape is None
+
+
+@dataclass
+class Bag(Serializable):
+    content: dict = field(default_factory=dict)
+    items: list = field(default_factory=list)
+    entries: tuple = ()
+
+
+# A tuple of models, as the SDK's read models hold them (the events of a subscription), is turned into a list of dicts.
+def test_to_dict_turns_a_tuple_of_models_into_a_list_of_their_dicts(card):
+    key, value = generate_readable_string(6), generate_readable_string(6)
+    bag = Bag(entries=(card, {key: {key: value}}))
+
+    result = bag.to_dict()
+    result["entries"][1][key][key] = generate_readable_string(6)
+
+    assert result["entries"][0] == card.to_dict()
+    assert bag.entries[1] == {key: {key: value}}
+    assert json.loads(bag.to_json())["entries"] == [card.to_dict(), {key: {key: value}}]
+
+
+# The result is the instance's values, not the instance's objects: changing it, at any depth, leaves the instance.
+def test_to_dict_gives_copies_of_nested_dicts_and_lists():
+    inner, key = generate_readable_string(6), generate_readable_string(6)
+    bag = Bag(content={key: {inner: [inner]}}, items=[{key: inner}])
+
+    result = bag.to_dict()
+    result["content"][key][inner].append(generate_readable_string(6))
+    result["content"][key][generate_readable_string(6)] = inner
+    result["items"][0][key] = generate_readable_string(6)
+
+    assert bag == Bag(content={key: {inner: [inner]}}, items=[{key: inner}])
 
 
 def test_classes_without_metadata_behave_as_before():

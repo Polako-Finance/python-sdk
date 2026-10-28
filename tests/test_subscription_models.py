@@ -19,7 +19,7 @@ from tests.factories import (
     make_subscribe_request,
     make_subscribe_response,
 )
-from tests.generators import generate_random_decimal, generate_readable_string
+from tests.generators import generate_random_decimal, generate_random_int, generate_readable_string
 
 FORM_POST_FIELDS = [
     ("action", "action"),
@@ -133,6 +133,44 @@ def test_a_form_of_another_kind_is_refused(model, make_raw):
         model.from_dict(make_raw())
 
 
+# A dict without a type (what 0.2.2's to_dict() gave, in Python names) is read as the model's own kind.
+@FORM_KINDS
+def test_a_form_dict_without_a_type_is_read_as_the_models_own_kind(make_raw):
+    form = parse_registration_form(make_raw())
+    saved = {name: value for name, value in form.to_dict(by_alias=False).items() if name != "type"}
+
+    assert type(form).from_dict(saved) == form
+
+
+# Without a type, a dict of another kind is still refused: its fields are not the model's.
+@pytest.mark.parametrize(
+    "model, make_raw",
+    [
+        (RedirectForm, make_form_post_response),
+        (RedirectForm, make_hpp_form_response),
+        (FormPost, make_hpp_form_response),
+        (HppFormPost, make_form_post_response),
+    ],
+    ids=["form_post as iframe", "hpp_form_post as iframe", "hpp_form_post as form_post", "form_post as hpp_form_post"],
+)
+def test_a_form_of_another_kind_without_a_type_is_refused(model, make_raw):
+    form = parse_registration_form(make_raw())
+    saved = {name: value for name, value in form.to_dict(by_alias=False).items() if name != "type"}
+
+    with pytest.raises(ValueError):
+        model.from_dict(saved)
+
+
+# The gateway's schema allows an hpp_form_post without fields; the subscription exists by then, so the form is kept.
+def test_an_hpp_form_without_fields_from_the_gateway_is_a_form():
+    raw = make_hpp_form_response(fields={})
+
+    form = parse_registration_form(raw)
+
+    assert isinstance(form, HppFormPost) and form.fields == {}
+    assert SubscribeResponse.from_json(json.dumps(make_subscribe_response(raw))).registration_form == form
+
+
 @pytest.mark.parametrize("model", [FormPost, HppFormPost, RedirectForm])
 def test_a_form_is_made_only_with_its_own_type(model):
     other = next(kind for kind in _FORMS_BY_TYPE if kind != model.type)
@@ -160,10 +198,12 @@ def test_the_fields_of_an_hpp_form_dict_are_a_copy():
 HALF_FORMS = {
     "form_post without a field": lambda: _without(make_form_post_response(), "signature"),
     "form_post with a null field": lambda: make_form_post_response(orderId=None),
-    "form_post with a number": lambda: make_form_post_response(totalAmount=12345),
+    "form_post with a number": lambda: make_form_post_response(totalAmount=generate_random_int()),
     "hpp_form_post without fields": lambda: _without(make_hpp_form_response(), "fields"),
-    "hpp_form_post with fields that are not an object": lambda: make_hpp_form_response(fields=["a"]),
-    "hpp_form_post with a value that is not text": lambda: make_hpp_form_response(fields={"a": 1}),
+    "hpp_form_post with fields that are not an object": lambda: make_hpp_form_response(fields=[generate_readable_string(5)]),
+    "hpp_form_post with a value that is not text": lambda: make_hpp_form_response(
+        fields={generate_readable_string(5): generate_random_int()}
+    ),
     "iframe without an action": lambda: _without(make_redirect_form_response(), "action"),
     "iframe with a null action": lambda: make_redirect_form_response(action=None),
 }

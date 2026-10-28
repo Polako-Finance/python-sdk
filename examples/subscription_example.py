@@ -101,7 +101,11 @@ async def subscribe(email: str):
 async def subscribe_from_the_page(email: str):
     created = await create_subscription_for(email)
     # The form as Polako Finance sent it, type first: the page passes it to Polako().submitRegistrationForm as it is.
-    return {"registrationForm": created.registration_form.to_dict()}
+    # The subscription ID lets the page show the subscription later.
+    return {
+        "subscriptionId": str(created.subscription_id),
+        "registrationForm": created.registration_form.to_dict(),
+    }
 
 
 @app.get("/subscribe/success")

@@ -103,7 +103,7 @@ def read_mapping(value: Any) -> Dict[str, Any]:
 
 
 def read_text_mapping(value: Any) -> Dict[str, str]:
-    """An object whose every value is text; a copy of it."""
+    """An object whose every value is text (it may be empty); a copy of it."""
     return {read_text(name): read_text(text) for name, text in read_mapping(value).items()}
 
 
@@ -144,11 +144,23 @@ def wire_field(decode: Callable[[Any], Any], alias: Optional[str] = None, *, req
     return field(metadata=metadata)
 
 
+def refuse_missing(instance: Any, *, every_field: bool = False) -> None:
+    """
+    The one check of a model built from an answer: its required fields (or, with ``every_field``, all of them) are there.
+
+    Raises:
+        ValueError: Naming the model and the fields that are missing or null
+    """
+    missing = [
+        f.name for f in fields(instance) if (every_field or f.metadata.get("required")) and getattr(instance, f.name) is None
+    ]
+    if missing:
+        raise ValueError(f"{type(instance).__name__}: missing {', '.join(missing)}")
+
+
 @dataclass(frozen=True)
 class StrictModel(Serializable):
     """A response model whose required fields must be present and not null."""
 
     def __post_init__(self) -> None:
-        missing = [f.name for f in fields(self) if f.metadata.get("required") and getattr(self, f.name) is None]
-        if missing:
-            raise ValueError(f"{type(self).__name__}: missing {', '.join(missing)}")
+        refuse_missing(self)
